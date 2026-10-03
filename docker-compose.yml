@@ -1,0 +1,31 @@
+services:
+  whale-checker:
+    build: .
+    container_name: whale-checker
+    restart: unless-stopped
+    env_file:
+      - "environment .env"        # ETHERSCAN_API_KEY, WHALE_THRESHOLD_USD, POLL_INTERVAL_SECONDS
+    volumes:
+      # Host `./data` holds whale_alert.db, shared read/write with Grafana below.
+      - ./data:/app/data:rw
+
+  grafana:
+    image: grafana/grafana:11.1.1
+    container_name: whale-grafana
+    restart: unless-stopped
+    environment:
+      # Community SQLite data source plugin (official Grafana ships no SQLite conn).
+      GF_INSTALL_PLUGINS: frser-sqlite-datasource
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      # Same SQLite file that whale-checker writes to (*.db-wal is the WAL journal).
+      - ./data:/data:ro
+      # Auto-load the SQLite data source + dashboard definitions on boot.
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - whale-checker

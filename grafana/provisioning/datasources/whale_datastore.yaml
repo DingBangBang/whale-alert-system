@@ -1,0 +1,13 @@
+apiVersion: 1
+
+datasources:
+  - name: WhaleSQLite
+    uid: whale-sqlite
+    type: frser-sqlite-datasource
+    access: proxy
+    isDefault: true
+    editable: true
+    jsonData:
+      # Path *inside the Grafana container*. The host `./data` folder is bind-mounted
+      # to `/data`, and whale-checker writes `/app/data/whale_alert.db` there.
+      path: /data/whale_alert.db
