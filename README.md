@@ -3,9 +3,9 @@
 实时监控以太坊主网的大额 ETH 转账。当一笔转账的美元价值超过阈值时，系统把该“巨鲸交易”写入 SQLite，并在终端打印预警；同时通过 **Docker Compose** 编排 Grafana，用预制看板可视化近 24 小时的巨鲸活动。
 
 - **数据源**：Etherscan API V2（免费 tier，通过 `proxy/eth_getBlockByNumber` 读取区块内 ETH 转账）
-- **阈值**：`WHALE_THRESHOLD_USD`（默认 `10000000`，即 1000 万美元）——从 `environment .env` 读取
-- **存储**：SQLite（`data/whale_alert.db`）
-- **可视化**：Grafana 11 + `frser-sqlite-datasource` 插件，provisioning 自动加载
+- **阈值**：`WHALE_THRESHOLD_USD`（默认 `500000`，即 50 万美元，较初版 $10M 下调以捕获更多巨鲸）——从 `environment .env` 读取
+- **存储**：SQLite（`data/whale_alert.db`，含 `whale_transfers` / `address_profiles` / `eth_price_ticks`）
+- **可视化**：Grafana 11 + `frser-sqlite-datasource` + `nikosc-percenttrend-panel`，provisioning 自动加载
 
 ---
 
@@ -15,11 +15,16 @@
 | --- | --- |
 | `whale_alert.py` | 主入口：轮询 Etherscan，检测巨鲸，写入数据库并打印预警 |
 | `etherscan_client.py` | Etherscan V2 客户端 + 纯函数 `detect_whales` / `classify_direction` |
-| `database.py` | SQLite 建表 / 去重写入 / 查询（WAL 模式） |
-| `backfill.py` | 历史数据回填工具（并发扫描，用于快速填充看板） |
+| `database.py` | SQLite 建表 / 去重写入 / 地址画像与价格采样（WAL 模式） |
+| `backfill.py` | 历史回填工具：**startblock/endblock 自动分页**（offset=1000/页）+ 地址画像 |
+| `src/address_profiler.py` | 巨鲸地址画像：余额 / USDT-USDC-DAI 持仓 / 交易频次 / 合约探测等 |
 | `Dockerfile` / `docker-compose.yml` | Python 检查器 + Grafana 编排 |
 | `grafana/` | Provisioning：SQLite 数据源 + 基础看板模板 |
 | `tests/` | pytest 单测，覆盖 `detect_whales` |
+
+> ⚡ **本次优化（v2）**：①阈值默认下调至 `$500,000`；②`backfill.py` 支持 `startblock/endblock + offset` 自动分页；
+> ③新增 `src/address_profiler.py` 巨鲸地址画像（ETH 余额 / USDT-USDC-DAI 持仓 / 交易频次 / 合约探测 / 近活跃时间等）并写入 `address_profiles` 表；
+> ④新增 `eth_price_ticks` 价格采样表；⑤Grafana 看板扩展到 8 个面板（价格+散点、今日统计、流向柱图、地址画像、周环比）。详见 [docs/development-log.md](docs/development-log.md)。
 
 ---
 
@@ -29,14 +34,18 @@
 flowchart LR
     subgraph Host["宿主机 (Docker Compose)"]
         C["whale-checker<br/>Python 3.11 镜像"]
-        G["grafana 11 镜像<br/>frser-sqlite-datasource"]
+        P["src/address_profiler.py<br/>巨鲸画像（随扫描调用）"]
+        G["grafana 11 镜像<br/>sqlite + percent-trend 插件"]
         V[(./data/whale_alert.db<br/>bind-mount)]
     end
 
     ES[("Etherscan API V2")]
 
-    C -- "eth_getBlockByNumber / ethprice" --> ES
-    C -- "写入 /app/data/whale_alert.db" --> V
+    C -- "eth_getBlockByNumber / ethprice / balance / tokenbalance / txlist" --> ES
+    P -- "balance / tokenbalance / txlist / getaddresstag" --> ES
+    C --> V
+    P --> V
+    C -. "写地址画像 + 价格采样" .-> P
     G -- "挂载只读 /data/whale_alert.db" --> V
     U["用户 / 浏览器"] -- "http://localhost:3000" --> G
 
@@ -60,7 +69,11 @@ flowchart TD
     F -- "是" --> H["classify_direction<br/>inflow/outflow/peer"]
     H --> I[WhaleDatabase<br/>写入 whale_alert.db]
     I --> J["终端预警 🔔"]
-    I --> K["Grafana<br/>1. 24h 金额分布  2. 流向占比  3. 活动时间线"]
+    I --> R[src/address_profiler.py<br/>余额 / 稳定币持仓 / 频次]
+    R --> I
+
+    E1 --> Pt["eth_price_ticks 采样"] --> I
+    I --> K["Grafana<br/>金额分布 / 价格+散点 / 今日统计 / 流向柱图 / 地址画像 / 周环比"]
 ```
 
 ---
@@ -73,8 +86,8 @@ flowchart TD
 # 1) 激活环境（所有命令都需要）
 conda activate whale_alert_project
 
-# 2) 安装依赖
-cd /Users/dingbangchu/Desktop/whale-alert-system
+# 2) 安装依赖（在项目根目录执行）
+cd whale-alert-system        # 或： cd /path/to/whale-alert-system
 pip install -r requirements.txt
 ```
 
@@ -84,14 +97,14 @@ pip install -r requirements.txt
 
 ```ini
 ETHERSCAN_API_KEY=你的Etherscan V2 API Key
-WHALE_THRESHOLD_USD=10000000
+WHALE_THRESHOLD_USD=500000
 POLL_INTERVAL_SECONDS=60
 SCAN_BLOCK_WINDOW=20
 CHAIN_ID=1
 ```
 
 - `ETHERSCAN_API_KEY`：在 [etherscan.io](https://etherscan.io/apis) 创建。
-- `WHALE_THRESHOLD_USD`：巨鲸判定阈值（美元），默认 1000 万。
+- `WHALE_THRESHOLD_USD`：巨鲸判定阈值（美元），**默认 50 万**（`config.py` 兜底值；若 `environment .env` 显式赋值则以此为准）。
 - `SCAN_BLOCK_WINDOW`：每次轮询扫描的最新区块数（每个区块 = 一次 API 请求，受免费额度限制，默认 20）。
 
 > 参考模板见 [`.env.example`](./.env.example)。
@@ -111,14 +124,21 @@ python whale_alert.py --once
 # 持续轮询（默认每 60s 一次）
 python whale_alert.py
 
-# 历史数据回填（快速填充看板，例如最近 1500 个区块）
-python backfill.py --blocks 1500
+# 历史数据回填（自动分页：startblock..endblock，每页 offset=1000 区块）
+python backfill.py --blocks 1500 --offset 1000
+
+# 只回填、不做地址画像
+python backfill.py --blocks 1000 --no-profile
+
+# 巨鲸地址画像（独立运行，或由扫描/回填自动触发）
+python -m src.address_profiler            # 增量画像
+python -m src.address_profiler --force    # 全量重画像
 ```
 
 ### 方式二：Docker Compose（推荐）
 
 ```bash
-cd /Users/dingbangchu/Desktop/whale-alert-system
+cd whale-alert-system        # 或： cd /path/to/whale-alert-system
 
 # 构建并启动（whale-checker + grafana）
 docker compose up -d --build
@@ -134,6 +154,10 @@ docker compose down
 
 - 登录：默认 `admin` / `admin`
 - 数据源与看板由 provisioning 自动加载，无需手动配置。
+
+> **插件说明**：需求中的 “Percentage Trend” 面板使用官方社区插件（Grafana Labs），其可安装 id 为
+> `nikosc-percenttrend-panel`（`grafana-percentage-trend-panel` 是显示名，非实际插件 id）。
+> `docker-compose.yml` 中已同时设置 `GF_INSTALL_PLUGINS`（运行时安装）与 `GF_PLUGINS_PREINSTALL`。
 
 ---
 
@@ -152,11 +176,16 @@ docker compose down
 ====================================================================
 ```
 
-Grafana 看板（`whale-overview`）三个面板：
+Grafana 看板（`whale-overview`）共 8 个面板：
 
 1. **最近 24 小时巨鲸交易金额分布**（按小时柱状图，USD）
 2. **按交易所流向占比**（饼图：流入 / 流出 / 点对点）
 3. **巨鲸活动时间线**（明细表）
+4. **ETH 价格曲线 + 巨鲸交易金额散点**（Timeseries，对数轴；价格源自 `eth_price_ticks` 采样）
+5. **今日巨鲸交易统计**（Stat：今日笔数 / 总额 / 单笔最大）
+6. **按交易所流向的金额分布**（Bar Chart）
+7. **巨鲸地址画像**（Table：余额 / 稳定币 / 交易频次 / 合约探测 / ETH 敞口）
+8. **本周 vs 上周巨鲸交易金额环比**（Percentage Trend）
 
 ---
 
@@ -179,7 +208,9 @@ python -m pytest -q
 ├── etherscan_client.py       # Etherscan V2 客户端 + detect_whales
 ├── database.py               # SQLite 存取
 ├── config.py                 # 配置加载（读 environment .env）
-├── backfill.py               # 历史回填工具
+├── backfill.py               # 历史回填（auto-pagination, offset=1000/页）
+├── src/address_profiler.py   # 巨鲸地址画像（余额/稳定币/频次/合约）
+├── src/__init__.py
 ├── requirements.txt
 ├── Dockerfile
 ├── docker-compose.yml

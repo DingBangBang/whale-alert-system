@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source.
 COPY config.py etherscan_client.py database.py whale_alert.py backfill.py ./
+COPY src ./src
 RUN mkdir -p data
 
 # Environment values (API key, threshold, poll interval) are injected at runtime by

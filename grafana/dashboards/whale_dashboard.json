@@ -1,37 +1,66 @@
 {
   "uid": "whale-overview",
   "title": "链上巨鲸行为预警 · Overview",
-  "tags": ["whale", "ethereum"],
+  "tags": [
+    "whale",
+    "ethereum"
+  ],
   "timezone": "browser",
   "editable": true,
   "refresh": "30s",
-  "version": 1,
+  "version": 2,
   "schemaVersion": 39,
-  "time": { "from": "now-24h", "to": "now" },
-  "templating": { "list": [] },
-  "annotations": { "list": [] },
+  "time": {
+    "from": "now-31d",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
   "panels": [
     {
       "id": 1,
       "type": "timeseries",
       "title": "最近 24 小时巨鲸交易金额分布（USD / 小时）",
-      "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "whale-sqlite"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "currencyUSD",
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "bars", "fillOpacity": 60 }
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60
+          }
         },
         "overrides": []
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
-          "format": "time_series",
-          "rawSql": true,
-          "query": "SELECT (CAST(strftime('%s', strftime('%Y-%m-%d %H:00:00', datetime(timestamp,'unixepoch'), 'localtime')) AS INTEGER) * 1000) AS time, SUM(value_usd) AS '金额(USD)' FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-24 hours') AS INTEGER) GROUP BY 1 ORDER BY 1"
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "whale-sqlite"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT (CAST(strftime('%s', strftime('%Y-%m-%d %H:00:00', datetime(timestamp,'unixepoch'), 'localtime')) AS INTEGER) ) AS time, SUM(value_usd) AS '金额(USD)' FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-24 hours') AS INTEGER) GROUP BY 1 ORDER BY 1",
+          "queryText": "SELECT (CAST(strftime('%s', strftime('%Y-%m-%d %H:00:00', datetime(timestamp,'unixepoch'), 'localtime')) AS INTEGER) ) AS time, SUM(value_usd) AS '金额(USD)' FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-24 hours') AS INTEGER) GROUP BY 1 ORDER BY 1",
+          "timeColumns": [
+            "time"
+          ]
         }
       ]
     },
@@ -39,25 +68,53 @@
       "id": 2,
       "type": "piechart",
       "title": "按交易所流向占比（24h）",
-      "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "whale-sqlite"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
       "fieldConfig": {
-        "defaults": { "color": { "mode": "palette-classic" } },
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
         "overrides": []
       },
       "options": {
-        "displayLabels": ["name", "value", "percent"],
-        "legend": { "displayMode": "table", "placement": "right" },
+        "displayLabels": [
+          "name",
+          "value",
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        },
         "pieType": "pie",
-        "reduceOptions": { "calcs": ["lastNotNull"], "values": false }
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        }
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
-          "format": "table",
-          "rawSql": true,
-          "query": "SELECT direction AS metric, COUNT(*) AS value FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-24 hours') AS INTEGER) GROUP BY direction"
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "whale-sqlite"
+          },
+          "queryType": "table",
+          "rawQueryText": "SELECT direction AS metric, COUNT(*) AS value FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-24 hours') AS INTEGER) GROUP BY direction",
+          "queryText": "SELECT direction AS metric, COUNT(*) AS value FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-24 hours') AS INTEGER) GROUP BY direction",
+          "timeColumns": []
         }
       ]
     },
@@ -65,19 +122,248 @@
       "id": 3,
       "type": "table",
       "title": "巨鲸活动时间线（24h）",
-      "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 8 },
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "whale-sqlite"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
       "fieldConfig": {
-        "defaults": { "color": { "mode": "thresholds" } },
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          }
+        },
         "overrides": []
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
-          "format": "table",
-          "rawSql": true,
-          "query": "SELECT datetime(timestamp,'unixepoch','localtime') AS '时间', from_address AS '发送地址', to_address AS '接收地址', printf('%.4f', value_eth) AS 'ETH', printf('%.2f', value_usd) AS 'USD', direction AS '流向', value_usd AS 'value_usd' FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-24 hours') AS INTEGER) ORDER BY timestamp DESC"
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "whale-sqlite"
+          },
+          "queryType": "table",
+          "rawQueryText": "SELECT datetime(timestamp,'unixepoch','localtime') AS '时间', from_address AS '发送地址', to_address AS '接收地址', printf('%.4f', value_eth) AS 'ETH', printf('%.2f', value_usd) AS 'USD', direction AS '流向', value_usd AS 'value_usd' FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-24 hours') AS INTEGER) ORDER BY timestamp DESC",
+          "queryText": "SELECT datetime(timestamp,'unixepoch','localtime') AS '时间', from_address AS '发送地址', to_address AS '接收地址', printf('%.4f', value_eth) AS 'ETH', printf('%.2f', value_usd) AS 'USD', direction AS '流向', value_usd AS 'value_usd' FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-24 hours') AS INTEGER) ORDER BY timestamp DESC",
+          "timeColumns": []
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "ETH 价格曲线 + 巨鲸交易金额散点（对数轴）",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "whale-sqlite"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "scale": "log2",
+          "custom": {
+            "drawStyle": "lines",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "whale",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "whale-sqlite"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT timestamp  AS time, value_usd AS '巨鲸金额(USD)' FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-32 days') AS INTEGER) ORDER BY time",
+          "queryText": "SELECT timestamp  AS time, value_usd AS '巨鲸金额(USD)' FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-32 days') AS INTEGER) ORDER BY time",
+          "timeColumns": [
+            "time"
+          ]
+        },
+        {
+          "refId": "price",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "whale-sqlite"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT ts  AS time, price_usd AS 'ETH价格(USD)' FROM eth_price_ticks WHERE CAST(ts AS INTEGER) >= CAST(strftime('%s','now','-32 days') AS INTEGER) ORDER BY time",
+          "queryText": "SELECT ts  AS time, price_usd AS 'ETH价格(USD)' FROM eth_price_ticks WHERE CAST(ts AS INTEGER) >= CAST(strftime('%s','now','-32 days') AS INTEGER) ORDER BY time",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "今日巨鲸交易统计",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "whale-sqlite"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "whale-sqlite"
+          },
+          "queryType": "table",
+          "rawQueryText": "SELECT COUNT(*) AS '今日笔数' FROM whale_transfers WHERE date(timestamp,'unixepoch','localtime') = date('now','localtime')",
+          "queryText": "SELECT COUNT(*) AS '今日笔数' FROM whale_transfers WHERE date(timestamp,'unixepoch','localtime') = date('now','localtime')",
+          "timeColumns": []
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "whale-sqlite"
+          },
+          "queryType": "table",
+          "rawQueryText": "SELECT ROUND(SUM(value_usd),0) AS '今日总额USD' FROM whale_transfers WHERE date(timestamp,'unixepoch','localtime') = date('now','localtime')",
+          "queryText": "SELECT ROUND(SUM(value_usd),0) AS '今日总额USD' FROM whale_transfers WHERE date(timestamp,'unixepoch','localtime') = date('now','localtime')",
+          "timeColumns": []
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "whale-sqlite"
+          },
+          "queryType": "table",
+          "rawQueryText": "SELECT ROUND(MAX(value_usd),0) AS '今日最大USD' FROM whale_transfers WHERE date(timestamp,'unixepoch','localtime') = date('now','localtime')",
+          "queryText": "SELECT ROUND(MAX(value_usd),0) AS '今日最大USD' FROM whale_transfers WHERE date(timestamp,'unixepoch','localtime') = date('now','localtime')",
+          "timeColumns": []
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "barchart",
+      "title": "按交易所流向的金额分布（24h）",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "whale-sqlite"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "whale-sqlite"
+          },
+          "queryType": "table",
+          "rawQueryText": "SELECT direction AS '流向', ROUND(SUM(value_usd),0) AS '金额(USD)' FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-24 hours') AS INTEGER) GROUP BY direction ORDER BY '金额(USD)' DESC",
+          "queryText": "SELECT direction AS '流向', ROUND(SUM(value_usd),0) AS '金额(USD)' FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-24 hours') AS INTEGER) GROUP BY direction ORDER BY '金额(USD)' DESC",
+          "timeColumns": []
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "巨鲸地址画像",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "whale-sqlite"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "whale-sqlite"
+          },
+          "queryType": "table",
+          "rawQueryText": "SELECT address AS '地址', direction AS '角色', printf('%.3f', eth_balance) AS 'ETH余额', printf('%.2f', stablecoin_usd) AS '稳定币USD', tx_count_24h AS '24h频次', tx_count_7d AS '7d频次', printf('%.2f', eth_usd_exposure) AS 'ETH敞口USD', is_contract AS '合约?', address_tag AS '标签', datetime(last_active_ts,'unixepoch','localtime') AS '最近活跃' FROM address_profiles ORDER BY eth_usd_exposure DESC",
+          "queryText": "SELECT address AS '地址', direction AS '角色', printf('%.3f', eth_balance) AS 'ETH余额', printf('%.2f', stablecoin_usd) AS '稳定币USD', tx_count_24h AS '24h频次', tx_count_7d AS '7d频次', printf('%.2f', eth_usd_exposure) AS 'ETH敞口USD', is_contract AS '合约?', address_tag AS '标签', datetime(last_active_ts,'unixepoch','localtime') AS '最近活跃' FROM address_profiles ORDER BY eth_usd_exposure DESC",
+          "timeColumns": []
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "nikosc-percenttrend-panel",
+      "title": "本周 vs 上周 · 巨鲸交易金额环比（日均）",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "whale-sqlite"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 29
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "whale-sqlite"
+          },
+          "queryType": "time series",
+          "rawQueryText": "SELECT (CAST(strftime('%s', strftime('%Y-%m-%d 00:00:00', datetime(timestamp,'unixepoch'), 'localtime')) AS INTEGER) ) AS time, SUM(value_usd) AS 'amount' FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-14 days') AS INTEGER) GROUP BY 1 ORDER BY 1",
+          "queryText": "SELECT (CAST(strftime('%s', strftime('%Y-%m-%d 00:00:00', datetime(timestamp,'unixepoch'), 'localtime')) AS INTEGER) ) AS time, SUM(value_usd) AS 'amount' FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-14 days') AS INTEGER) GROUP BY 1 ORDER BY 1",
+          "timeColumns": [
+            "time"
+          ]
         }
       ]
     }

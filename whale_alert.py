@@ -75,9 +75,23 @@ def run_scan(db: WhaleDatabase, once: bool) -> None:
     price = 0.0
     try:
         price = get_eth_price_usd(config.ETHERSCAN_API_KEY)
+        db.record_price_tick(price)  # sample for the dashboard ETH-price curve
     except Exception:  # pragma: no cover
         pass
     logger.info("入库 %s 笔新巨鲸交易（累计 %s 笔），ETH = $%s", saved, db.count(), price)
+
+    _profile_new_addresses(db, api_key)
+
+
+def _profile_new_addresses(db: WhaleDatabase, api_key: str) -> None:
+    """Profile whale addresses added this cycle (never blocks the main loop)."""
+    try:
+        from src.address_profiler import profile_whale_addresses
+        count = profile_whale_addresses(api_key, db)
+        if count:
+            logger.info("Profiled %s new whale addresses (total %s).", count, db.profile_count())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Address profiling skipped: %s", exc)
 
 
 def main() -> None:

@@ -1,0 +1,1 @@
+"""Whale Alert System — src package (analytics & profiling helpers)."""

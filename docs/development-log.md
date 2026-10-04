@@ -145,10 +145,79 @@
 
 ---
 
-## 四、后续规划（Roadmap）
+## 五、本次优化 (v2) —— 思路、决策与新增能力
 
-- [ ] 增加多链支持（`chainid` 已参数化）。
-- [ ] 交易所地址清单外置到配置/CSV，支持热更新。
-- [ ] 预警多通道推送（Telegram / Slack / Discord）。
-- [ ] 接入 ERC-20 与内部交易（需 Pro 或第三方数据源）。
-- [ ] 看板增加价格叠加曲线与环比趋势。
+> 本次优化聚焦：**更低的巨鲸阈值、自动分页回填、巨鲸地址画像、价格曲线采样、更丰富的看板**。
+
+### 5.1 阈值下调：`WHALE_THRESHOLD_USD 10000000 → 500000`
+- **决策**：初版 $10M 粒度的“巨鲸”在大时间窗内稀疏（2h 仅 3 笔），不利于实时预警与看板分析。
+  下调至 `$500,000` 可捕获更多“中大型”链本币转账，且更贴近“机构/做市商级动作”。
+- **实现**：修改 `.env.example` 与 `config.py` 的兜底默认值。注意——`environment .env` 是用户实测文件，
+  若其中显式写了 `WHALE_THRESHOLD_USD`，会覆盖默认值；本优化只改默认（README 已说明）。
+
+### 5.2 `backfill.py` 自动分页
+- **需求**：用 `startblock`/`endblock` 循环调用 Etherscan，每次请求 `offset=1000`，自动翻页直到取完区块范围。
+- **实现**：按“页”遍历 `[start_block, end_block]`，每页最多处理 `--offset`（默认 1000）个区块，
+  同一页内并发拉取区块，页末自动 `cursor = page_end + 1` 前移到下一页，直到 `page_end >= end_block` 结束。
+- **关键决策（实测约束）**：Etherscan 的 `account/txlistinternal`（原生按区块区间批量查询）为 **Pro 专属**，
+  免费 key 不可用，因此把“按页翻取”落在免费的 `proxy/eth_getBlockByNumber` 上（每页=1000 区块）。
+  每页写一条 `eth_price_ticks` 采样，支撑看板价格曲线。
+
+### 5.3 `src/address_profiler.py` —— 巨鲸地址画像
+- **思路**：高级分析关注的“链上身份证”：知道它有多少钱、持仓什么稳定币、动得多频繁、是不是合约。
+- **数据维度**（每个巨鲸地址）：
+  - ETH 余额 `/account/balance`（wei→ETH）与 **ETH 美元敞口 = ETH余额 × 现价**；
+  - 三大稳定币持仓 `/account/tokenbalance`（USDT / USDC / DAI，6/6/18 位小数缩放）+ 稳定币合计 USD；
+  - 交易频次 `/account/txlist` 统计 **24h / 7d 频次、最近活跃时间、观测到的流入/流出 ETH、平均/最大单笔**；
+  - **合约探测** `/contract/getsourcecode`、**链上标签** `/account/getaddresstag`（分析师的“身份线索”）。
+- **写入**：`address_profiles` 表，`address` 为主键（INSERT OR REPLACE，可增量）。
+- **触发**：主检查器每轮对新地址画像；`backfill` 回填后自动画像；也可 `python -m src.address_profiler [--force]` 独立运行。
+
+### 5.4 价格采样 `eth_price_ticks`
+- 每个扫描/回填页写入一条 `(ts, price_usd)`，用于看板“ETH 价格曲线 + 巨鲸金额散点”面板。
+
+### 5.5 Docker / Grafana 插件
+- `docker-compose.yml` 新增 `GF_PLUGINS_PREINSTALL`，并在 `GF_INSTALL_PLUGINS` 中加入 **Percentage Trend** 插件。
+- **决策（插件 id 校准）**：需求中的 `grafana-percentage-trend-panel` 是查询到的“显示名”；
+  实际可下载的官方社区插件（Grafana Labs，Niko Schmuck）id 为 **`nikosc-percenttrend-panel`**。
+  为保证真实可安装、可渲染，`docker-compose.yml` 与看板 `type` 使用 `nikosc-percenttrend-panel`（已注明）。
+
+### 5.6 看板扩展（3 → 8 面板）
+1. 24h 巨鲸金额分布（柱）  2. 流向占比（饼）  3. 巨鲸活动时间线（表）
+4. **ETH 价格曲线 + 巨鲸金额散点**（Timeseries，对数轴，`eth_price_ticks` 采样）
+5. **今日巨鲸交易统计**（Stat：今日笔数/总额/单笔最大）
+6. **按交易所流向的金额分布**（Bar Chart）
+7. **巨鲸地址画像**（Table：余额/稳定币/频次/合约/ETH 敞口/标签）
+8. **本周 vs 上周巨鲸交易金额环比**（Percentage Trend，`nikosc-percenttrend-panel`）
+
+### 5.7 v2 数据洞察（基于 $500K 数据实测）
+> 见下节「六、v2 实测 Insights」。
+
+---
+
+## 六、v2 实测 Insights（$500,000 阈值）
+
+> 数据源：`data/whale_alert.db`；ETH 现价 ≈ $2,700，阈值 $500,000（≈185 ETH）。
+> 采集方式：对若干**当前活跃**的交易所热钱包调用 `account/txlist`（`offset=1000`，`sort=desc`）取最近大额转账。
+
+### 实测概览
+- **巨鲸交易**：18 笔，其中 **11 笔发生在最近 24 小时**；总金额约 **$74.3M**。
+- **按流向金额**：`exchange_inflow` $40.5M（8 笔）、`exchange_outflow` $28.4M（6 笔）、`peer_to_peer` $5.4M（4 笔）。
+  → 本窗口**净流入交易所**（$40.5M 进 vs $28.4M 出），偏向「入所」，需结合价格判断抛压。
+- **地址画像**：20 个地址；`0x28c6c0…`(Binance 热钱包) ETH 余额 **85,457 ETH**（≈$2.3 亿）、
+  `0xdfd529…` 22,210 ETH、`0x21a31e…` 21,153 ETH、`0x9696f5…` 19,040 ETH——典型交易所/托管巨鲸特征（非合约、24h 活跃度高）。
+
+### 三条 Data-driven Suggestions（v2）
+1. **净流入交易所 = 潜在抛压**：实测净流入 $12.1M，若价格处于高位需警惕短期抛压；建议把「交易所净流入」做独立面板并叠加价格。
+2. **监控高频热钱包**：$500K 阈值下，交易所热钱包贡献了绝大多数命中；建议对 `EXCHANGE_ADDRESSES` 中“24h 交易频次高”的地址加权监控。
+3. **画像驱动风险分层**：以「ETH 敞口 + 稳定币持仓 + 是否合约」对地址分层，把“巨额 ETH 敞口 + 大量稳定币”的地址列为高优先级观察对象。
+
+### 5.8 本轮踩坑与修复（重要）
+- **frser-sqlite-datasource v4 查询模型变更**：v4.x 的查询字段是
+  `rawQueryText` / `queryText` / `queryType`（"table" | "time series"）/ `timeColumns`，
+  **不再是** v3 的 `rawSql` / `query` / `format`。用旧字段会导致所有面板查询返回空。
+  看板 JSON 已按 v4 模型改写（11 个 target）。
+- **`account/txlist` 默认 `sort=asc`**：会返回“最老”的交易，导致画像的 24h/7d 频次错误、
+  取数取到多年前的数据。已改为默认 `sort=desc`。
+- **区块级 `eth_getBlockByNumber` 极易触发免费额度 429**：新增 `BACKFILL_WORKERS`（默认 3）
+  可下调并发（`=1` 最稳）以规避限流。

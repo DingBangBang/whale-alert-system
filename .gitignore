@@ -22,3 +22,7 @@ data/*.db-shm
 # OS / IDE
 .DS_Store
 .vscode/
+
+# Generated demo artifacts (dashboard screenshot)
+/whale_dashboard*.png
+*.png

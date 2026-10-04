@@ -54,7 +54,8 @@ ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "").strip()
 
 # --- Threshold ----------------------------------------------------------------
 # The minimum transfer size (in USD) that qualifies as a "whale" transaction.
-WHALE_THRESHOLD_USD = _get_int("WHALE_THRESHOLD_USD", 10_000_000)
+# (Lowered from $10M during the optimisation pass to capture more whale activity.)
+WHALE_THRESHOLD_USD = _get_int("WHALE_THRESHOLD_USD", 500_000)
 
 # --- Runtime ------------------------------------------------------------------
 # How long the checker sleeps between poll cycles.
@@ -70,3 +71,8 @@ BASE_RATE_LIMIT_DELAY = 0.25  # seconds between Etherscan requests (respects ~5 
 # --- Storage -----------------------------------------------------------------
 # Shared with the Grafana container via a bind-mount volume `./data:/data`.
 DB_PATH = os.getenv("WHALE_DB_PATH", str(PROJECT_ROOT / "data" / "whale_alert.db"))
+
+# --- Backfill ----------------------------------------------------------------
+# Number of blocks fetched concurrently during a backfill page. Lower this to 1 on
+# strict free tiers to avoid HTTP 429 rate limiting at the cost of speed.
+BACKFILL_WORKERS = _get_int("BACKFILL_WORKERS", 3)

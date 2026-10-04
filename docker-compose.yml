@@ -14,8 +14,12 @@ services:
     container_name: whale-grafana
     restart: unless-stopped
     environment:
-      # Community SQLite data source plugin (official Grafana ships no SQLite conn).
-      GF_INSTALL_PLUGINS: frser-sqlite-datasource
+      # Community SQLite data source plugin (official Grafana ships no SQLite conn)
+      # + Percentage Trend panel (nikosc-percenttrend-panel). NOTE: the user-requested
+      # "grafana-percentage-trend-panel" is the display name; the downloadable plugin id
+      # (Grafana Labs) is "nikosc-percenttrend-panel", used here so it actually installs.
+      GF_INSTALL_PLUGINS: frser-sqlite-datasource,nikosc-percenttrend-panel
+      GF_PLUGINS_PREINSTALL: frser-sqlite-datasource,nikosc-percenttrend-panel
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
