@@ -6,7 +6,8 @@
 - **阈值**：`WHALE_THRESHOLD_USD`（默认 `500000`，即 50 万美元，较初版 $10M 下调以捕获更多巨鲸）——从 `environment .env` 读取
 - **存储**：SQLite（`data/whale_alert.db`，含 `whale_transfers` / `address_profiles` / `eth_price_ticks`）
 - **可视化**：Grafana 11 + `frser-sqlite-datasource` + `nikosc-percenttrend-panel`，provisioning 自动加载
-- **在线公开快照（无需本地运行即可查看）**：https://snapshots.raintank.io/dashboard/snapshot/YWCQi1i0cFvSQ2rOdIJi7lhtT9eR4oGC
+- **在线公开静态快照（无需本地运行即可查看）**：http://localhost:3000/dashboard/snapshot/GXcEjoseCUqtEZMv4TkGAxQ9YhwHnFeO
+- **在线公开动态看板（无需本地运行即可查看）**：https://snapshots.raintank.io/dashboard/snapshot/YWCQi1i0cFvSQ2rOdIJi7lhtT9eR4oGC
 
 ---
 
@@ -188,7 +189,6 @@ Grafana 看板（`whale-overview`）共 8 个面板：
 7. **巨鲸地址画像**（Table：余额 / 稳定币 / 交易频次 / 合约探测 / ETH 敞口）
 8. **本周 vs 上周巨鲸交易金额环比**（Percentage Trend）
 
-![巨鲸看板总览](docs/screenshots/whale-overview-dashboard.png)
 
 ---
 
