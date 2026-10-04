@@ -1,11 +1,12 @@
 # 🐋 链上巨鲸行为预警系统 (On-chain Whale Behaviour Alert System)
 
-实时监控以太坊主网的大额 ETH 转账。当一笔转账的美元价值超过阈值时，系统把该“巨鲸交易”写入 SQLite，并在终端打印预警；同时通过 **Docker Compose** 编排 Grafana，用预制看板可视化近 24 小时的巨鲸活动。
+准实时（定时轮询）监控以太坊主网的大额 ETH 转账。当一笔转账的美元价值超过阈值时，系统把该“巨鲸交易”写入 SQLite，并在终端打印预警；同时通过 **Docker Compose** 编排 Grafana，用预制看板可视化近 24 小时的巨鲸活动。
 
 - **数据源**：Etherscan API V2（免费 tier，通过 `proxy/eth_getBlockByNumber` 读取区块内 ETH 转账）
 - **阈值**：`WHALE_THRESHOLD_USD`（默认 `500000`，即 50 万美元，较初版 $10M 下调以捕获更多巨鲸）——从 `environment .env` 读取
 - **存储**：SQLite（`data/whale_alert.db`，含 `whale_transfers` / `address_profiles` / `eth_price_ticks`）
 - **可视化**：Grafana 11 + `frser-sqlite-datasource` + `nikosc-percenttrend-panel`，provisioning 自动加载
+- **在线公开快照（无需本地运行即可查看）**：https://snapshots.raintank.io/dashboard/snapshot/YWCQi1i0cFvSQ2rOdIJi7lhtT9eR4oGC
 
 ---
 
@@ -187,6 +188,16 @@ Grafana 看板（`whale-overview`）共 8 个面板：
 7. **巨鲸地址画像**（Table：余额 / 稳定币 / 交易频次 / 合约探测 / ETH 敞口）
 8. **本周 vs 上周巨鲸交易金额环比**（Percentage Trend）
 
+![巨鲸看板总览](docs/screenshots/whale-overview-dashboard.png)
+
+---
+
+## ⏱️ 关于「实时」与数据覆盖范围
+
+本系统采用**准实时轮询架构（定时轮询 Polling）**，而不是实时流式推送（Streaming）；轮询间隔由 `.env` 中的 `POLL_INTERVAL_SECONDS` 控制。它通过可配置的轮询间隔持续从 Etherscan 拉取最新区块数据，写入 SQLite 供 Grafana 展示。**它不是真正的流式实时**（比如 WebSocket 订阅 `newHeads`），因为 Etherscan 免费 API 不提供 WebSocket 推送；但把轮询间隔缩短到 10–15 秒即可达到近似实时的监控效果。之所以选择该方案，是因为 Etherscan 免费 API 的限制——通过 Alchemy 或 Infura 的 WebSocket 订阅 `newHeads` 需要付费节点。
+
+当前数据库中的巨鲸交易记录覆盖最近约 **7,200 个区块（约 24 小时）**的链上数据。回填范围可通过 `backfill.py --blocks N` 参数调整；若需覆盖更长时间窗口，建议结合 `startblock` 和 `endblock` 参数按需回填，并注意 Etherscan 免费 API 的每日调用限额（10 万次/天）。如果想让覆盖时间更长，只需修改 `backfill.py` 的区块范围，比如 `--blocks 10000` 就是大约 33 小时。
+
 ---
 
 ## 🧪 测试
@@ -244,3 +255,11 @@ python -m pytest -q
 ## 许可证
 
 MIT（本项目为教学/演示用途，不构成投资建议）。
+
+---
+
+## 🚀 本地体验完整看板（一键启动）
+
+1. 克隆仓库
+2. 启动服务：`docker compose up -d --build`
+3. 打开浏览器访问 `http://localhost:3000`（账号/密码：admin/admin）

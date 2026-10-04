@@ -23,11 +23,16 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
+      # Public snapshot sharing (Share -> Snapshot -> Publish to snapshots.raintank.io)
+      GF_SNAPSHOTS_ENABLED: "true"
+      GF_SNAPSHOTS_EXTERNAL_SNAPSHOT_URL: https://snapshots.raintank.io
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
     ports:
       - "3000:3000"
     volumes:
-      # Same SQLite file that whale-checker writes to (*.db-wal is the WAL journal).
-      - ./data:/data:ro
+      # Same SQLite file that whale-checker writes to. Mount rw so SQLite can
+      # create/refresh the WAL shared-memory (-shm) file when reading.
+      - ./data:/data:rw
       # Auto-load the SQLite data source + dashboard definitions on boot.
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro

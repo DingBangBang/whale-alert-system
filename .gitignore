@@ -23,6 +23,5 @@ data/*.db-shm
 .DS_Store
 .vscode/
 
-# Generated demo artifacts (dashboard screenshot)
+# Generated demo artifacts (root-level screenshots are not committed)
 /whale_dashboard*.png
-*.png

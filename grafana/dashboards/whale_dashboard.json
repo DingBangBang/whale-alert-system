@@ -340,7 +340,7 @@
     {
       "id": 8,
       "type": "nikosc-percenttrend-panel",
-      "title": "本周 vs 上周 · 巨鲸交易金额环比（日均）",
+      "title": "本周 vs 上周 · 巨鲸交易金额环比",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "whale-sqlite"
@@ -358,14 +358,24 @@
             "type": "frser-sqlite-datasource",
             "uid": "whale-sqlite"
           },
-          "queryType": "time series",
-          "rawQueryText": "SELECT (CAST(strftime('%s', strftime('%Y-%m-%d 00:00:00', datetime(timestamp,'unixepoch'), 'localtime')) AS INTEGER) ) AS time, SUM(value_usd) AS 'amount' FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-14 days') AS INTEGER) GROUP BY 1 ORDER BY 1",
-          "queryText": "SELECT (CAST(strftime('%s', strftime('%Y-%m-%d 00:00:00', datetime(timestamp,'unixepoch'), 'localtime')) AS INTEGER) ) AS time, SUM(value_usd) AS 'amount' FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-14 days') AS INTEGER) GROUP BY 1 ORDER BY 1",
-          "timeColumns": [
-            "time"
-          ]
+          "queryType": "table",
+          "timeColumns": [],
+          "rawQueryText": "SELECT (SELECT SUM(value_usd) FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-7 days') AS INTEGER)) AS this_week, (SELECT SUM(value_usd) FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-14 days') AS INTEGER) AND CAST(timestamp AS INTEGER) < CAST(strftime('%s','now','-7 days') AS INTEGER)) AS last_week",
+          "queryText": "SELECT (SELECT SUM(value_usd) FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-7 days') AS INTEGER)) AS this_week, (SELECT SUM(value_usd) FROM whale_transfers WHERE CAST(timestamp AS INTEGER) >= CAST(strftime('%s','now','-14 days') AS INTEGER) AND CAST(timestamp AS INTEGER) < CAST(strftime('%s','now','-7 days') AS INTEGER)) AS last_week"
         }
-      ]
+      ],
+      "options": {
+        "percentageValueField": "this_week",
+        "baseValueField": "last_week",
+        "interpretAsTrend": true,
+        "unit": "currencyUSD",
+        "percentageNrDecimals": 2,
+        "positiveIsGood": true
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
     }
   ]
 }

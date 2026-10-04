@@ -68,7 +68,7 @@
 
 ### 5. `backfill.py` —— 历史回填工具
 
-**思路**：实时检查器每次只扫很小区间，`$10M` 级别巨鲸相对稀少，看板可能在较长时间内没有数据。
+**思路**：准实时轮询检查器每次只扫很小区间，`$10M` 级别巨鲸相对稀少，看板可能在较长时间内没有数据。
 用线程池并发扫描更大历史窗口，把真实巨鲸一次性灌入 DB，快速填充看板。
 
 **关键决策**：并发度 `MAX_WORKERS=3`，配合 `_get()` 的退避重试以尽量不触发免费额度限制；
@@ -150,7 +150,7 @@
 > 本次优化聚焦：**更低的巨鲸阈值、自动分页回填、巨鲸地址画像、价格曲线采样、更丰富的看板**。
 
 ### 5.1 阈值下调：`WHALE_THRESHOLD_USD 10000000 → 500000`
-- **决策**：初版 $10M 粒度的“巨鲸”在大时间窗内稀疏（2h 仅 3 笔），不利于实时预警与看板分析。
+- **决策**：初版 $10M 粒度的“巨鲸”在大时间窗内稀疏（2h 仅 3 笔），不利于准实时预警与看板分析。
   下调至 `$500,000` 可捕获更多“中大型”链本币转账，且更贴近“机构/做市商级动作”。
 - **实现**：修改 `.env.example` 与 `config.py` 的兜底默认值。注意——`environment .env` 是用户实测文件，
   若其中显式写了 `WHALE_THRESHOLD_USD`，会覆盖默认值；本优化只改默认（README 已说明）。
@@ -221,3 +221,15 @@
   取数取到多年前的数据。已改为默认 `sort=desc`。
 - **区块级 `eth_getBlockByNumber` 极易触发免费额度 429**：新增 `BACKFILL_WORKERS`（默认 3）
   可下调并发（`=1` 最稳）以规避限流。
+
+### 5.9 准实时轮询架构（而非流式实时）
+- 本系统采用**准实时轮询（Polling）**：`whale_alert.py` 每隔 `POLL_INTERVAL_SECONDS`（`.env`，默认 60s）
+  拉取最新区块并处理，**不是** WebSocket 流式推送。
+- **原因**：Etherscan 免费 API 不提供 WebSocket 推送；Alchemy / Infura 的 `newHeads` 订阅需付费节点。
+  把轮询间隔缩短到 **10–15 秒**可近似实时。
+- **覆盖率**：当前 DB 覆盖最近约 **7,200 个区块（约 24 小时）**；回填范围由
+  `backfill.py --blocks N` / `--start/--end` 控制，注意免费额度 10 万次/天。
+- **公开快照**：`GF_SNAPSHOTS_ENABLED` / `GF_SNAPSHOTS_EXTERNAL_SNAPSHOT_URL` /
+  `GF_SECURITY_ALLOW_EMBEDDING` 已开启，可发布到 snapshots.raintank.io，生成不依赖本地 Docker 的公开链接。
+- **SQLite 挂载修正**：Grafana 需以 `:rw` 挂载 `./data`，否则 SQLite 无法创建 WAL 的 `-shm` 文件，
+  所有面板会显示 “No data”。
