@@ -1,4 +1,4 @@
-# 🐋 链上巨鲸行为预警系统 (On-chain Whale Behaviour Alert System)
+# 🐋 链上巨鲸行为预警系统·数据资产化 (On-chain Whale Behaviour Alert System·Data Assetization)
 
 [中文](README.md) | [English](README_en.md)
 
