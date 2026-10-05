@@ -113,7 +113,13 @@ def fetch_block_transfers(api_key: str, start_block: int, end_block: int) -> Lis
     """
     transfers: List[Dict[str, Any]] = []
     for block in range(start_block, end_block + 1):
-        transfers.extend(fetch_block_transfers_single(api_key, block))
+        try:
+            transfers.extend(fetch_block_transfers_single(api_key, block))
+        except Exception as exc:  # pragma: no cover - network resilience
+            # A single un-fetchable block (e.g. persistent rate limiting) must not
+            # abort the whole range, otherwise the scan_state checkpoint never
+            # advances and the pipeline would retry the same range forever.
+            logger.warning("Block %s fetch failed (%s); skipping", block, exc)
     return transfers
 
 
