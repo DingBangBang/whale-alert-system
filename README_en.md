@@ -11,6 +11,8 @@ Near-real-time (scheduled polling) monitoring of large ETH transfers on Ethereum
 - [**Online public static snapshot (view without running locally)**](http://localhost:3000/dashboard/snapshot/GXcEjoseCUqtEZMv4TkGAxQ9YhwHnFeO)
 - [**Online public live dashboard (view without running locally)**](https://snapshots.raintank.io/dashboard/snapshot/YWCQi1i0cFvSQ2rOdIJi7lhtT9eR4oGC)
 
+> 💡 **For the incremental accumulation and data-asset design, see the `feature/incremental-pipeline` branch.**
+
 ---
 
 ## ✨ Key Features

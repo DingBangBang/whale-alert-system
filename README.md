@@ -11,6 +11,8 @@
 - [**在线公开静态快照（无需本地运行即可查看）**](http://localhost:3000/dashboard/snapshot/GXcEjoseCUqtEZMv4TkGAxQ9YhwHnFeO)
 - [**在线公开动态看板（无需本地运行即可查看）**](https://snapshots.raintank.io/dashboard/snapshot/YWCQi1i0cFvSQ2rOdIJi7lhtT9eR4oGC)
 
+> 💡 **如需了解增量累积与数据资产化设计，请查看 `feature/incremental-pipeline` 分支。**
+
 ---
 
 ## ✨ 主要特性
