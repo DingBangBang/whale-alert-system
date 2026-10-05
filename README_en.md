@@ -15,6 +15,49 @@ Near-real-time (scheduled polling) monitoring of large ETH transfers on Ethereum
 
 ---
 
+## 🌿 Incremental branch `feature/incremental-pipeline`
+
+> You are on the **`feature/incremental-pipeline`** branch: on top of the clean
+> "single run + snapshot data" version, it adds the "**accumulating table + scheduled
+> jobs + time-series analysis**" data-asset design.
+> Full details 👉 [docs/incremental-pipeline.md](docs/incremental-pipeline.md).
+
+**Key differences**
+
+- **Dedup**: `whale_transfers.tx_hash` gains a `UNIQUE` constraint and inserts become `INSERT OR IGNORE` (idempotent, replayable).
+- **Incremental scan**: a new `scan_state` table records `last_scanned_block`; each cycle scans only **new blocks** and advances the checkpoint, so data keeps accumulating.
+- **Scheduling**: every day at **15:00** it automatically runs `python whale_alert.py --once`, pulling new blocks into SQLite and refreshing the dashboard.
+- **Time series**: the dashboard defaults to **Last 7 days** and adds 5 panels (DoD, 7-day rolling average, stacked area, heatmap, cumulative net), plus reserved **7D / 30D** slots.
+
+**How to clone this branch**
+
+```bash
+# Option 1: clone the branch directly
+git clone -b feature/incremental-pipeline \
+  ssh://git@ssh.github.com:443/DingBangBang/whale-alert-system.git \
+  whale-alert-system-incremental
+
+# Option 2: add a worktree alongside the main checkout
+git worktree add -b feature/incremental-pipeline \
+  ../whale-alert-system-incremental \
+  origin/feature/incremental-pipeline
+```
+
+**Docker Hub image `daily-whale-scan`**
+
+```bash
+# Pull and run a single incremental scan (<dockerhub-user> = your Docker Hub namespace)
+docker pull <dockerhub-user>/daily-whale-scan:latest
+docker run --rm -v "$PWD/data:/app/data:rw" \
+  -e ETHERSCAN_API_KEY=your_key \
+  <dockerhub-user>/daily-whale-scan:latest python whale_alert.py --once
+```
+
+> Data insights are **intentionally left empty for now** (7d/30d only become meaningful
+> after several days of accumulation); see section 6 of `docs/incremental-pipeline.md`.
+
+---
+
 ## ✨ Key Features
 
 | Module | Description |

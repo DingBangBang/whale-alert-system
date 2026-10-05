@@ -233,3 +233,43 @@
   `GF_SECURITY_ALLOW_EMBEDDING` 已开启，可发布到 snapshots.raintank.io，生成不依赖本地 Docker 的公开链接。
 - **SQLite 挂载修正**：Grafana 需以 `:rw` 挂载 `./data`，否则 SQLite 无法创建 WAL 的 `-shm` 文件，
   所有面板会显示 “No data”。
+
+---
+
+## 七、增量累积与数据资产化（feature/incremental-pipeline）
+
+> 目标：把「快照式看板」升级为「持续累积的数据资产」。主分支保持干净快照版，本分支展示增量设计。
+> 详细说明见 [docs/incremental-pipeline.md](incremental-pipeline.md)。
+
+### 7.1 需求与设计动机
+- 主分支每次轮询重扫「最近 N 块」，DB 只是滚动快照；DoD / 7 日 / 30 日等时间序列分析无从谈起。
+- 本分支引入**扫描检查点（`scan_state`）**：记录 `last_scanned_block`，每轮只扫「检查点 + 1 … 最新块」。
+- 去重从「唯一索引 + 捕获 `IntegrityError`」改为 **列级 `tx_hash UNIQUE` + `INSERT OR IGNORE`**，写入天然幂等、可安全重放。
+- 数据只增不减 → 时间越久，7d/30d 的分析越有意义（**数据资产化**）。
+
+### 7.2 改动清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `database.py` | `whale_transfers.tx_hash` 加 `UNIQUE` 约束；写入改 `INSERT OR IGNORE`；新增 `scan_state` 表与 `get_last_scanned_block()` / `set_last_scanned_block()` |
+| `config.py` | 新增 `SCAN_MAX_BLOCK_SPAN`（默认 2000），保护离线过久时的免费额度 |
+| `etherscan_client.py` | 新增 `scan_block_range(api_key, threshold, start, end)`，按显式区间扫描 |
+| `whale_alert.py` | `run_scan` 改为「读检查点 → 续扫新块 → 写库 → 推进检查点」，只扫新块 |
+| `grafana/dashboards/whale_dashboard.json` | 新增 5 个时间序列面板 + 7D/30D 预留位，默认 Last 7 days |
+| `tests/test_incremental.py` | 新增 `scan_state` / 去重 单测 |
+| `docs/incremental-pipeline.md` | 本分支专属文档（clone / 镜像 / 预留位 / 洞察留空） |
+
+### 7.3 关键决策 & 踩坑
+- **检查点初始化**：首次运行（无 `scan_state` 行）时，用 `MAX(block_number)` 初始化，避免对快照里已有的历史重复扫描。
+- **回填上限**：若 `last_scanned_block + 1` 落后最新块超过 `SCAN_MAX_BLOCK_SPAN`（离线很久 / 全新库），只扫最新 N 块，避免一次消耗过多免费额度。
+- **刻意避开窗口函数**：面板 SQL 用相关子查询实现 DoD / 滚动平均 / 累计净额，避免依赖插件底层 SQLite 的窗口函数支持，保证开箱即用。
+- **检查点只在成功后推进**：扫描抛异常时保持 `last_scanned_block` 不变，下轮自动重试，不会丢数据。
+- **看板时间范围**：默认由 `now-31d` 改为 **`now-7d`**（Last 7 days），与增量时间序列口径一致。
+
+### 7.4 验证
+- `pytest`：**8 passed**（含 3 个增量单测：唯一约束/去重、检查点初始化、检查点 upsert）。
+- 实测 `python whale_alert.py --once`：`scan_state` 从 `26127513` → `26127515`（第二轮仅扫了新增的 2 个区块），确认「只扫新块 + 状态结转」生效。
+- 看板 JSON：13 个面板 + 1 个预留位；5 个新面板 SQL 均在快照库上执行通过。
+
+### 7.5 数据洞察
+> 见 [docs/incremental-pipeline.md](incremental-pipeline.md) 第 6 节 —— **先留空，待累积数日后补齐 7d/30d 洞察**。

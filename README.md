@@ -15,6 +15,47 @@
 
 ---
 
+## 🌿 增量累积分支 `feature/incremental-pipeline`
+
+> 你现在看到的是**本分支 `feature/incremental-pipeline`**：在「单次运行 + 快照数据」的干净版本之上，
+> 增加了「**累积表 + 定时调度 + 时间序列分析**」的数据资产化设计。
+> 完整说明见 👉 [docs/incremental-pipeline.md](docs/incremental-pipeline.md)。
+
+**核心差异**
+
+- **去重**：`whale_transfers.tx_hash` 增加 `UNIQUE` 约束，入库改为 `INSERT OR IGNORE`（幂等、可重放）。
+- **增量扫描**：新增 `scan_state` 表记录 `last_scanned_block`，每轮**只扫新块**并结转状态，数据持续累积。
+- **定时调度**：每天 **15:00** 自动执行 `python whale_alert.py --once`，拉取新块写入 SQLite 并刷新看板。
+- **时间序列**：看板默认 **Last 7 days**，新增 5 个面板（DoD 环比 / 7 日滚动平均 / 堆叠面积 / 热力图 / 累计净额），并预留 **7D / 30D** 展示位。
+
+**如何 clone 此分支**
+
+```bash
+# 方式一：直接克隆分支
+git clone -b feature/incremental-pipeline \
+  ssh://git@ssh.github.com:443/DingBangBang/whale-alert-system.git \
+  whale-alert-system-incremental
+
+# 方式二：在主分支目录用 worktree 并存
+git worktree add -b feature/incremental-pipeline \
+  ../whale-alert-system-incremental \
+  origin/feature/incremental-pipeline
+```
+
+**Docker Hub 镜像 `daily-whale-scan`**
+
+```bash
+# 拉取并单次增量扫描（<dockerhub-user> 换成你的 Docker Hub 命名空间）
+docker pull <dockerhub-user>/daily-whale-scan:latest
+docker run --rm -v "$PWD/data:/app/data:rw" \
+  -e ETHERSCAN_API_KEY=你的Key \
+  <dockerhub-user>/daily-whale-scan:latest python whale_alert.py --once
+```
+
+> 数据洞察部分**先留空待补**（需累积数日后 7d/30d 才具统计意义），详见 `docs/incremental-pipeline.md` 第 6 节。
+
+---
+
 ## ✨ 主要特性
 
 | 模块 | 说明 |

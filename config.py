@@ -66,6 +66,12 @@ POLL_INTERVAL_SECONDS = _get_int("POLL_INTERVAL_SECONDS", 60)
 # (Etherscan free: ~5 req/s, 100k req/day. 20 blk x 1440 polls ≈ 29k req/day.)
 SCAN_BLOCK_WINDOW = _get_int("SCAN_BLOCK_WINDOW", 20)
 
+# Incremental mode: the poller resumes from the last scanned block and only fetches
+# *new* blocks, accumulating data over time. If the node/database has been offline
+# long enough that the backlog exceeds this many blocks, the scan is capped to this
+# span (the newest SCAN_MAX_BLOCK_SPAN blocks) to protect the free-tier budget.
+SCAN_MAX_BLOCK_SPAN = _get_int("SCAN_MAX_BLOCK_SPAN", 2000)
+
 BASE_RATE_LIMIT_DELAY = 0.25  # seconds between Etherscan requests (respects ~5 req/s).
 
 # --- Storage -----------------------------------------------------------------

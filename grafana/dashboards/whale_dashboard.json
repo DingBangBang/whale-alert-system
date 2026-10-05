@@ -11,7 +11,7 @@
   "version": 2,
   "schemaVersion": 39,
   "time": {
-    "from": "now-31d",
+    "from": "now-7d",
     "to": "now"
   },
   "templating": {
@@ -375,6 +375,155 @@
       "fieldConfig": {
         "defaults": {},
         "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "DoD 环比 · 每日巨鲸金额 + 日环比%（Last 7 days）",
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 42 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "bars", "fillOpacity": 40 }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "DoD环比%" },
+            "properties": [
+              { "id": "unit", "value": "percent" },
+              { "id": "custom.axisPlacement", "value": "right" }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "WITH daily AS (SELECT date(timestamp,'unixepoch','localtime') AS d, SUM(value_usd) AS total FROM whale_transfers GROUP BY d) SELECT CAST(strftime('%s', d) AS INTEGER) AS time, ROUND(total,0) AS '日总额(USD)', ROUND((total - (SELECT total FROM daily p WHERE p.d < daily.d ORDER BY p.d DESC LIMIT 1)) * 100.0 / NULLIF((SELECT total FROM daily p WHERE p.d < daily.d ORDER BY p.d DESC LIMIT 1),0), 2) AS 'DoD环比%' FROM daily ORDER BY d",
+          "queryText": "WITH daily AS (SELECT date(timestamp,'unixepoch','localtime') AS d, SUM(value_usd) AS total FROM whale_transfers GROUP BY d) SELECT CAST(strftime('%s', d) AS INTEGER) AS time, ROUND(total,0) AS '日总额(USD)', ROUND((total - (SELECT total FROM daily p WHERE p.d < daily.d ORDER BY p.d DESC LIMIT 1)) * 100.0 / NULLIF((SELECT total FROM daily p WHERE p.d < daily.d ORDER BY p.d DESC LIMIT 1),0), 2) AS 'DoD环比%' FROM daily ORDER BY d"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "7 日滚动平均 · 巨鲸日金额（Last 7 days）",
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 42 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "WITH daily AS (SELECT date(timestamp,'unixepoch','localtime') AS d, SUM(value_usd) AS total FROM whale_transfers GROUP BY d) SELECT CAST(strftime('%s', d) AS INTEGER) AS time, ROUND(total,0) AS '日总额(USD)', ROUND((SELECT AVG(total) FROM daily w WHERE w.d BETWEEN date(daily.d,'-6 days') AND daily.d),0) AS '7日滚动平均(USD)' FROM daily ORDER BY d",
+          "queryText": "WITH daily AS (SELECT date(timestamp,'unixepoch','localtime') AS d, SUM(value_usd) AS total FROM whale_transfers GROUP BY d) SELECT CAST(strftime('%s', d) AS INTEGER) AS time, ROUND(total,0) AS '日总额(USD)', ROUND((SELECT AVG(total) FROM daily w WHERE w.d BETWEEN date(daily.d,'-6 days') AND daily.d),0) AS '7日滚动平均(USD)' FROM daily ORDER BY d"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "堆叠面积 · 每日流向金额构成（Last 7 days）",
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 50 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 70, "stacking": { "mode": "normal" } }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "SELECT CAST(strftime('%s', date(timestamp,'unixepoch','localtime')) AS INTEGER) AS time, ROUND(SUM(CASE WHEN direction='exchange_inflow' THEN value_usd ELSE 0 END),0) AS '交易所流入', ROUND(SUM(CASE WHEN direction='exchange_outflow' THEN value_usd ELSE 0 END),0) AS '交易所流出', ROUND(SUM(CASE WHEN direction='peer_to_peer' THEN value_usd ELSE 0 END),0) AS '点对点' FROM whale_transfers GROUP BY time ORDER BY time",
+          "queryText": "SELECT CAST(strftime('%s', date(timestamp,'unixepoch','localtime')) AS INTEGER) AS time, ROUND(SUM(CASE WHEN direction='exchange_inflow' THEN value_usd ELSE 0 END),0) AS '交易所流入', ROUND(SUM(CASE WHEN direction='exchange_outflow' THEN value_usd ELSE 0 END),0) AS '交易所流出', ROUND(SUM(CASE WHEN direction='peer_to_peer' THEN value_usd ELSE 0 END),0) AS '点对点' FROM whale_transfers GROUP BY time ORDER BY time"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "heatmap",
+      "title": "热力图 · 巨鲸交易金额密度（Last 7 days）",
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 59 },
+      "options": {
+        "calculate": true,
+        "color": { "mode": "scheme", "scheme": "Spectral", "steps": 64, "exponent": 0.5 },
+        "cellGap": 1,
+        "legend": { "show": true },
+        "tooltip": { "show": true },
+        "yAxis": { "unit": "currencyUSD", "axisPlacement": "left", "format": "short" },
+        "xAxis": { "show": true }
+      },
+      "fieldConfig": {
+        "defaults": { "custom": { "hideFrom": { "legend": false, "tooltip": false, "viz": false } } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "SELECT CAST(timestamp AS INTEGER) AS time, ROUND(value_usd,0) AS '金额' FROM whale_transfers ORDER BY time",
+          "queryText": "SELECT CAST(timestamp AS INTEGER) AS time, ROUND(value_usd,0) AS '金额' FROM whale_transfers ORDER BY time"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "累计净额 · 交易所累计净流入（Last 7 days）",
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 59 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 25 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "SELECT t AS time, ROUND((SELECT SUM(CASE WHEN direction='exchange_inflow' THEN value_usd WHEN direction='exchange_outflow' THEN -value_usd ELSE 0 END) FROM whale_transfers w2 WHERE CAST(w2.timestamp AS INTEGER) <= t),0) AS '累计净流入交易所(USD)' FROM (SELECT DISTINCT CAST(timestamp AS INTEGER) AS t FROM whale_transfers) ORDER BY t",
+          "queryText": "SELECT t AS time, ROUND((SELECT SUM(CASE WHEN direction='exchange_inflow' THEN value_usd WHEN direction='exchange_outflow' THEN -value_usd ELSE 0 END) FROM whale_transfers w2 WHERE CAST(w2.timestamp AS INTEGER) <= t),0) AS '累计净流入交易所(USD)' FROM (SELECT DISTINCT CAST(timestamp AS INTEGER) AS t FROM whale_transfers) ORDER BY t"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "text",
+      "title": "📅 7D / 30D 数据展示位（预留）",
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "whale-sqlite" },
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 68 },
+      "options": {
+        "mode": "markdown",
+        "content": "**本分支将看板时间范围默认设为 Last 7 days，并预留 7D / 30D 数据展示位：**\n\n- **7D（预留）**：7 日累计巨鲸金额、7 日均值、7 日净流入趋势\n- **30D（预留）**：30 日活跃度、30 日累计净额、月内 Top 地址\n\n> 数据随 `scan_state` 持续累积而变厚，届时可直接将预留位替换为正式面板。"
       }
     }
   ]

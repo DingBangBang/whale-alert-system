@@ -18,7 +18,7 @@ from typing import List
 
 import config
 from database import WhaleDatabase
-from etherscan_client import get_eth_price_usd, scan_recent_whales
+from etherscan_client import get_eth_price_usd, get_latest_block, scan_block_range
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,7 +46,12 @@ def print_alerts(whales: List[dict], threshold_usd: float) -> None:
 
 
 def run_scan(db: WhaleDatabase, once: bool) -> None:
-    """Execute one scan cycle: fetch, detect, persist and print."""
+    """Execute one incremental scan cycle: fetch *new* blocks, persist, print.
+
+    Instead of re-scanning a fixed trailing window on every poll, this resumes from
+    the persisted ``scan_state.last_scanned_block`` checkpoint, so each cycle only
+    fetches the blocks that are genuinely new and the dataset keeps accumulating.
+    """
     api_key = config.ETHERSCAN_API_KEY
     if not api_key:
         logger.error("ETHERSCAN_API_KEY not set. Add it to 'environment .env'.")
@@ -54,12 +59,33 @@ def run_scan(db: WhaleDatabase, once: bool) -> None:
             raise SystemExit(1)
         return
 
+    latest = None
+    last_scanned = None
     try:
-        whales = scan_recent_whales(
-            api_key=api_key,
-            threshold_usd=config.WHALE_THRESHOLD_USD,
-            window=config.SCAN_BLOCK_WINDOW,
-        )
+        latest = get_latest_block(api_key)
+        last_scanned = db.get_last_scanned_block()
+        start = last_scanned + 1
+
+        # Guard the free-tier budget: if we are far behind (e.g. first run against a
+        # stale snapshot), cap the catch-up to the newest SCAN_MAX_BLOCK_SPAN blocks.
+        floor = max(latest - config.SCAN_MAX_BLOCK_SPAN + 1, 0)
+        if start < floor:
+            logger.warning(
+                "Backlog of %s blocks exceeds cap; scanning only the newest %s blocks",
+                latest - start + 1, config.SCAN_MAX_BLOCK_SPAN,
+            )
+            start = floor
+
+        if start > latest:
+            logger.info("No new blocks to scan (last_scanned=%s, latest=%s).", last_scanned, latest)
+            whales: List[dict] = []
+        else:
+            whales = scan_block_range(
+                api_key=api_key,
+                threshold_usd=config.WHALE_THRESHOLD_USD,
+                start_block=start,
+                end_block=latest,
+            )
     except Exception as exc:  # pragma: no cover - network resilience
         logger.error("Scan failed: %s", exc)
         if once:
@@ -68,17 +94,25 @@ def run_scan(db: WhaleDatabase, once: bool) -> None:
 
     saved = 0
     for whale in whales:
-        if db.insert_whale(whale):
+        if db.insert_whale(whale):  # INSERT OR IGNORE keeps the table accumulating
             saved += 1
 
     print_alerts(whales, config.WHALE_THRESHOLD_USD)
+
+    # Advance the checkpoint only after the range scanned successfully.
+    if latest is not None:
+        db.set_last_scanned_block(latest)
+
     price = 0.0
     try:
         price = get_eth_price_usd(config.ETHERSCAN_API_KEY)
         db.record_price_tick(price)  # sample for the dashboard ETH-price curve
     except Exception:  # pragma: no cover
         pass
-    logger.info("入库 %s 笔新巨鲸交易（累计 %s 笔），ETH = $%s", saved, db.count(), price)
+    logger.info(
+        "入库 %s 笔新巨鲸交易（累计 %s 笔），区间 %s..%s，ETH = $%s",
+        saved, db.count(), (last_scanned + 1) if last_scanned is not None else "?", latest, price,
+    )
 
     _profile_new_addresses(db, api_key)
 

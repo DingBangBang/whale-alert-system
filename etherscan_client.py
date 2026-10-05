@@ -181,6 +181,24 @@ def scan_recent_whales(api_key: str, threshold_usd: float, window: int) -> List[
     return whales
 
 
+def scan_block_range(
+    api_key: str, threshold_usd: float, start_block: int, end_block: int
+) -> List[Dict[str, Any]]:
+    """Incremental scan of an explicit ``[start_block, end_block]`` range.
+
+    Unlike :func:`scan_recent_whales` (which always looks at a fixed trailing
+    window), this is driven by the persisted checkpoint, so each poll only fetches
+    the blocks that are genuinely new and the dataset accumulates over time.
+    """
+    eth_price_usd = get_eth_price_usd(api_key)
+    logger.info(
+        "Scanning blocks %s..%s (ETH/USD = %s, threshold = $%s)",
+        start_block, end_block, eth_price_usd, threshold_usd,
+    )
+    transfers = fetch_block_transfers(api_key, start_block, end_block)
+    return detect_whales(transfers, threshold_usd=threshold_usd, eth_price_usd=eth_price_usd)
+
+
 def _get(payload: Dict[str, str], api_key: str, timeout: int = 15, retries: int = 5) -> Dict[str, Any]:
     """Perform a single GET against the Etherscan V2 API with a rate-limit break.
 

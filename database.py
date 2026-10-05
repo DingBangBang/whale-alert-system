@@ -17,7 +17,9 @@ logger = logging.getLogger("whale.database")
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS whale_transfers (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    tx_hash     TEXT    NOT NULL,
+    -- tx_hash carries a UNIQUE constraint so the incremental pipeline can rely on
+    -- INSERT OR IGNORE for idempotent, ever-accumulating writes.
+    tx_hash     TEXT    NOT NULL UNIQUE,
     block_number INTEGER,
     timestamp   INTEGER,
     from_address TEXT,
@@ -57,7 +59,18 @@ CREATE TABLE IF NOT EXISTS address_profiles (
     profiled_at      TEXT DEFAULT (datetime('now'))
 );
 
+-- Kept for databases created before the column-level UNIQUE constraint was added
+-- (CREATE TABLE IF NOT EXISTS does not retrofit an existing table).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_whale_tx_hash ON whale_transfers(tx_hash);
+
+-- Incremental scan checkpoint: the highest block already scanned. The poller
+-- resumes from here so every run fetches only *new* blocks and the dataset keeps
+-- accumulating (data becomes a long-lived asset instead of a rolling snapshot).
+CREATE TABLE IF NOT EXISTS scan_state (
+    id                 INTEGER PRIMARY KEY CHECK (id = 1),
+    last_scanned_block INTEGER NOT NULL DEFAULT 0,
+    updated_at         TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -82,7 +95,7 @@ class WhaleDatabase:
         try:
             cur = self.conn.execute(
                 """
-                INSERT INTO whale_transfers
+                INSERT OR IGNORE INTO whale_transfers
                     (tx_hash, block_number, timestamp, from_address, to_address,
                      value_eth, value_usd, direction)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -108,6 +121,40 @@ class WhaleDatabase:
     def count(self) -> int:
         cur = self.conn.execute("SELECT COUNT(*) FROM whale_transfers")
         return int(cur.fetchone()[0])
+
+    # --- Incremental scan state ----------------------------------------------
+    def get_last_scanned_block(self) -> int:
+        """Highest block already scanned.
+
+        On first use the checkpoint is initialised from the newest block already
+        present in ``whale_transfers`` (e.g. the seeded snapshot), so the poller
+        never re-fetches history it already holds.
+        """
+        row = self.conn.execute(
+            "SELECT last_scanned_block FROM scan_state WHERE id = 1"
+        ).fetchone()
+        if row is not None:
+            return int(row[0])
+        seed = self.conn.execute(
+            "SELECT COALESCE(MAX(block_number), 0) FROM whale_transfers"
+        ).fetchone()
+        value = int(seed[0] or 0)
+        self.set_last_scanned_block(value)
+        return value
+
+    def set_last_scanned_block(self, block_number: int) -> None:
+        """Persist the scan checkpoint (idempotent upsert of the single row)."""
+        self.conn.execute(
+            """
+            INSERT INTO scan_state (id, last_scanned_block, updated_at)
+            VALUES (1, ?, datetime('now'))
+            ON CONFLICT(id) DO UPDATE SET
+                last_scanned_block = excluded.last_scanned_block,
+                updated_at = datetime('now')
+            """,
+            (int(block_number),),
+        )
+        self.conn.commit()
 
     # --- Price ticks ----------------------------------------------------------
     def record_price_tick(self, price_usd: float, ts: Optional[int] = None) -> None:
