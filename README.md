@@ -6,8 +6,8 @@
 - **阈值**：`WHALE_THRESHOLD_USD`（默认 `500000`，即 50 万美元，较初版 $10M 下调以捕获更多巨鲸）——从 `environment .env` 读取
 - **存储**：SQLite（`data/whale_alert.db`，含 `whale_transfers` / `address_profiles` / `eth_price_ticks`）
 - **可视化**：Grafana 11 + `frser-sqlite-datasource` + `nikosc-percenttrend-panel`，provisioning 自动加载
-- **在线公开静态快照（无需本地运行即可查看）**：http://localhost:3000/dashboard/snapshot/GXcEjoseCUqtEZMv4TkGAxQ9YhwHnFeO
-- **在线公开动态看板（无需本地运行即可查看）**：https://snapshots.raintank.io/dashboard/snapshot/YWCQi1i0cFvSQ2rOdIJi7lhtT9eR4oGC
+- [**在线公开静态快照（无需本地运行即可查看）**](http://localhost:3000/dashboard/snapshot/GXcEjoseCUqtEZMv4TkGAxQ9YhwHnFeO)
+- [**在线公开动态看板（无需本地运行即可查看）**](https://snapshots.raintank.io/dashboard/snapshot/YWCQi1i0cFvSQ2rOdIJi7lhtT9eR4oGC)
 
 ---
 
@@ -85,12 +85,15 @@ flowchart TD
 项目使用 conda 虚拟环境 `whale_alert_project`（Python 3.11，已存在）。
 
 ```bash
-# 1) 激活环境（所有命令都需要）
+# 1) 创建并激活环境（所有命令都需要）
+conda create -n whale_alert_project python=3.11
 conda activate whale_alert_project
 
 # 2) 安装依赖（在项目根目录执行）
 cd whale-alert-system        # 或： cd /path/to/whale-alert-system
 pip install -r requirements.txt
+
+# 3) 安装Docker和Grafana服务
 ```
 
 ### 配置文件 `environment .env`
@@ -118,8 +121,6 @@ CHAIN_ID=1
 ### 方式一：本地运行
 
 ```bash
-conda activate whale_alert_project
-
 # 单次扫描（测试用 / 定时任务）
 python whale_alert.py --once
 
@@ -140,16 +141,15 @@ python -m src.address_profiler --force    # 全量重画像
 ### 方式二：Docker Compose（推荐）
 
 ```bash
+git clone <repo>
+
 cd whale-alert-system        # 或： cd /path/to/whale-alert-system
 
-# 构建并启动（whale-checker + grafana）
+# 构建并启动docker容器，此时容器会自动运行轮询+回填数据
 docker compose up -d --build
 
 # 查看巨鲸预警日志
 docker compose logs -f whale-checker
-
-# 停止
-docker compose down
 ```
 
 启动后访问 Grafana：**http://localhost:3000**
@@ -252,10 +252,3 @@ python -m pytest -q
 
 - [开发日志 + 数据洞察](docs/development-log.md)
 
----
-
-## 🚀 本地体验完整看板（一键启动）
-
-1. 克隆仓库
-2. 启动服务：`docker compose up -d --build`
-3. 打开浏览器访问 `http://localhost:3000`（账号/密码：admin/admin）
