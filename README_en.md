@@ -1,4 +1,4 @@
-# 🐋 On-chain Whale Behaviour Alert System
+# 🐋 On-Chain Whale Activity Monitoring & Alert System · Data Assetization
 
 [中文](README.md) | [English](README_en.md)
 
