@@ -1,5 +1,7 @@
 # 🐋 链上巨鲸行为预警系统 (On-chain Whale Behaviour Alert System)
 
+[中文](README.md) | [English](README_en.md)
+
 准实时（定时轮询）监控以太坊主网的大额 ETH 转账。当一笔转账的美元价值超过阈值时，系统把该“巨鲸交易”写入 SQLite，并在终端打印预警；同时通过 **Docker Compose** 编排 Grafana，用预制看板可视化近 24 小时的巨鲸活动。
 
 - **数据源**：Etherscan API V2（免费 tier，通过 `proxy/eth_getBlockByNumber` 读取区块内 ETH 转账）
