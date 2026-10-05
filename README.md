@@ -15,44 +15,110 @@
 
 ---
 
-## 🌿 增量累积分支 `feature/incremental-pipeline`
+## 🌿 增量累积模式（feature/incremental-pipeline）
 
-> 你现在看到的是**本分支 `feature/incremental-pipeline`**：在「单次运行 + 快照数据」的干净版本之上，
-> 增加了「**累积表 + 定时调度 + 时间序列分析**」的数据资产化设计。
-> 完整说明见 👉 [docs/incremental-pipeline.md](docs/incremental-pipeline.md)。
+本项目支持**增量累积模式**，通过 **cron 每日调度持续更新**：
 
-**核心差异**
+- **只拉新数据**：每次扫描**只拉取上次扫描区块之后的新数据**，基于 `tx_hash` 去重后**追加**到 `whale_transfers` 表
+  （列级 `tx_hash UNIQUE` 约束 + `INSERT OR IGNORE`，幂等可重放）。
+- **断点续扫**：扫描进度由 `scan_state.last_scanned_block` 记录，重启或漏跑后自动从上次位置续扫
+  （`SCAN_MAX_BLOCK_SPAN` 防止一次补太多）。
+- **每日调度**：可通过 **cron** 或 **Cline Schedule** 每日调度，**持续积累数据资产**。
+- **内置历史数据**：仓库中的 `data/whale_alert.db` 已包含通过 `backfill.py` 回填的**历史数据**，
+  用于展示**多日时间序列分析**效果。若要持续更新，请配置每日调度任务（见下）。
 
-- **去重**：`whale_transfers.tx_hash` 增加 `UNIQUE` 约束，入库改为 `INSERT OR IGNORE`（幂等、可重放）。
-- **增量扫描**：新增 `scan_state` 表记录 `last_scanned_block`，每轮**只扫新块**并结转状态，数据持续累积。
-- **定时调度**：每天 **15:00** 自动执行 `python whale_alert.py --once`，拉取新块写入 SQLite 并刷新看板。
-- **时间序列**：看板默认 **Last 7 days**，新增 5 个面板（DoD 环比 / 7 日滚动平均 / 堆叠面积 / 热力图 / 累计净额），并预留 **7D / 30D** 展示位。
-
-**如何 clone 此分支**
+### 别人 clone 后想这样做，操作步骤
 
 ```bash
-# 方式一：直接克隆分支
+# 1) 克隆增量分支
 git clone -b feature/incremental-pipeline \
   ssh://git@ssh.github.com:443/DingBangBang/whale-alert-system.git \
   whale-alert-system-incremental
+cd whale-alert-system-incremental
 
-# 方式二：在主分支目录用 worktree 并存
-git worktree add -b feature/incremental-pipeline \
-  ../whale-alert-system-incremental \
-  origin/feature/incremental-pipeline
+# 2) 激活 conda 环境并安装依赖
+conda activate whale_alert_project      # Python 3.11；没有就先 conda create -n whale_alert_project python=3.11
+pip install -r requirements.txt
+# 把 ETHERSCAN_API_KEY 写入 environment .env（参考 .env.example）
+
+# 3) 配置每日调度（二选一）
+# 3a) Cline Schedule（推荐，先创建一次）
+cline schedule create "daily-whale-scan" \
+  --cron "0 15 * * *" \
+  --prompt "conda activate whale_alert_project && python whale_alert.py --once" \
+  --workspace ~/Desktop/whale-alert-system-incremental
+
+# 3b) 或系统 cron（每天 15:00）
+# 0 15 * * * cd ~/Desktop/whale-alert-system-incremental && \
+#   conda run -n whale_alert_project python whale_alert.py --once >> logs/cron.log 2>&1
+
+# 4) 数据会自动增量写入 data/whale_alert.db，Grafana 看板随之刷新
 ```
 
-**Docker Hub 镜像 `daily-whale-scan`**
+### 🐳 直接拉取镜像（不想自己 build）
+
+如果你不想自己 build 但又想拥有这个项目，可以直接拉取镜像：
 
 ```bash
-# 拉取并单次增量扫描（<dockerhub-user> 换成你的 Docker Hub 命名空间）
-docker pull <dockerhub-user>/daily-whale-scan:latest
+docker pull bonnie333333333/daily-whale-scan:latest
+
+# 单次增量扫描（挂载宿主 ./data，密钥用 -e 注入）
 docker run --rm -v "$PWD/data:/app/data:rw" \
   -e ETHERSCAN_API_KEY=你的Key \
-  <dockerhub-user>/daily-whale-scan:latest python whale_alert.py --once
+  bonnie333333333/daily-whale-scan:latest python whale_alert.py --once
 ```
 
-> 数据洞察部分**先留空待补**（需累积数日后 7d/30d 才具统计意义），详见 `docs/incremental-pipeline.md` 第 6 节。
+### 📦 本地构建并推送（维护者）
+
+```bash
+docker build -t bonnie333333333/daily-whale-scan:latest .
+docker push bonnie333333333/daily-whale-scan:latest
+```
+
+---
+
+## Demo Data & Dashboard (7d / 30d)
+
+<!--
+  待 30 天累积数据生成后补充数据库文件与看板截图。
+  计划在此处补充：
+  - 30 天累积的 data/whale_alert.db（或压缩包）与下载说明
+  - Last 7 days / Last 30 days 时间序列看板截图
+  - 数据覆盖区间、总记录数、巨鲸笔数等统计
+-->
+
+> ⏳ 待 30 天累积数据生成后补充数据库文件与看板截图。
+
+---
+
+## 📈 时间序列分析
+
+看板在原有 8 个面板基础上，新增以下 **5 个时间序列 Panel**（默认时间范围 **Last 7 days**），用于把「累积数据」变成可读的趋势：
+
+| Panel | 类型 | 计算逻辑（SQL 摘要） | 业务含义 |
+| --- | --- | --- | --- |
+| **DoD 环比**（每日巨鲸金额 + 日环比%） | timeseries | 按天 `SUM(value_usd)`，并用相关子查询取「前一天总额」算 `(今日-昨日)/昨日×100%` | 看单日相对前一日的**变化速度**，判断巨鲸活动升温还是降温 |
+| **7 日滚动平均** | timeseries | 按天汇总后，对每天取「当天及前 6 天」的 `AVG(total)` | 抹平单日噪声，识别**真实趋势**（而非被某天巨鲸暴击带偏） |
+| **堆叠面积**（每日流向金额构成） | timeseries | 按天 `GROUP BY`，用 `CASE WHEN direction=...` 拆成「交易所流入 / 流出 / 点对点」三条序列并堆叠 | 看资金**结构变化**：是入所（潜在抛压）还是点对点转移 |
+| **热力图**（巨鲸交易金额密度） | heatmap | 每条记录 `(timestamp, value_usd)`，交给 Grafana 按时间/金额自动分桶 | 快速定位**大额集中时段**、识别金额分布密度 |
+| **累计净额**（交易所累计净流入） | timeseries | 对每个时间点用相关子查询累加 `流入(+)/流出(-)` | 衡量区间内的**净抛压 / 承接**方向与强度 |
+
+> 具体 SQL 与逐条计算逻辑见 [docs/development-log.md](docs/development-log.md) 第七章。
+
+---
+
+## 🔔 每日运行反馈
+
+每次定时任务（`python scripts/daily_report.py`）完成后：
+
+- **生成 HTML 报告**到 `reports/daily_report_YYYYMMDD.html`；
+- **弹出 macOS 系统通知**（`osascript`），例如「新增 X 条，总记录 Y 条」；任务失败时也会弹
+  「今日运行失败：<原因>」而不会静默消失；
+- 成功后在浏览器中**自动打开**当天的 HTML 报告。
+
+报告包含字段：运行状态、链上拉取状态、累积表写入状态、Grafana 刷新状态、运行时长、
+**本次新增条数**、**最新记录时间戳**、**总记录数**、`last_scanned_block`，以及 Grafana 链接
+（http://localhost:3001）。详见 [scripts/daily_report.py](scripts/daily_report.py)。
 
 ---
 

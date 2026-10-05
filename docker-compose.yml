@@ -1,7 +1,9 @@
+# Incremental branch stack. Runs ALONGSIDE the main-branch stack, so container
+# names and the Grafana port are shifted (3001 instead of 3000) to avoid clashes.
 services:
   whale-checker:
     build: .
-    container_name: whale-checker
+    container_name: whale-checker-incremental
     restart: unless-stopped
     # Both files are optional: a fresh clone with neither file still boots and
     # serves the committed snapshot. Add `environment .env` (or `.env`) with an
@@ -12,9 +14,10 @@ services:
       - path: ".env"
         required: false
     environment:
-      # One-time history depth scanned on first boot (then the poll loop takes
-      # over). Set BOOTSTRAP_BLOCKS=0 to disable, FORCE_BACKFILL=1 to re-run.
-      BOOTSTRAP_BLOCKS: "${BOOTSTRAP_BLOCKS:-2000}"
+      # Incremental branch: scanning is driven by the persisted scan_state
+      # checkpoint (whale_alert.py only fetches *new* blocks), so the one-time
+      # bootstrap backfill is disabled here (BOOTSTRAP_BLOCKS=0).
+      BOOTSTRAP_BLOCKS: "${BOOTSTRAP_BLOCKS:-0}"
       FORCE_BACKFILL: "${FORCE_BACKFILL:-0}"
     volumes:
       # Host `./data` holds whale_alert.db, shared read/write with Grafana below.
@@ -22,7 +25,7 @@ services:
 
   grafana:
     image: grafana/grafana:11.1.1
-    container_name: whale-grafana
+    container_name: whale-grafana-incremental
     restart: unless-stopped
     environment:
       # Community SQLite data source plugin (official Grafana ships no SQLite conn)
@@ -39,7 +42,9 @@ services:
       GF_SNAPSHOTS_EXTERNAL_SNAPSHOT_URL: https://snapshots.raintank.io
       GF_SECURITY_ALLOW_EMBEDDING: "true"
     ports:
-      - "3000:3000"
+      # Published on 3001 so it can run at the same time as the main-branch
+      # Grafana (which keeps 3000).
+      - "3001:3000"
     volumes:
       # Same SQLite file that whale-checker writes to. Mount rw so SQLite can
       # create/refresh the WAL shared-memory (-shm) file when reading.

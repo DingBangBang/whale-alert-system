@@ -1,275 +1,325 @@
-# 开发日志 & 数据洞察 (Development Log & Insights)
+# 开发日志 · 增量累积与数据资产化（feature/incremental-pipeline）
 
-> 项目：链上巨鲸行为预警系统 · 环境：`whale_alert_project`（Python 3.11）
-> 本日志记录每个模块的实现思路、关键决策，以及从 Grafana 看板提炼的 Insights 与 data-driven suggestions。
-
----
-
-## 一、总体设计目标
-
-1. 用 Etherscan API 获取大额 ETH 转账，阈值与 API Key 从 `.env` 读取。
-2. 检测超过 `WHAILIE THRESHOLD_USD` 的巨鲸交易 → 写入 SQLite + 终端预警。
-3. Docker Compose 编排 Python 检查器与 Grafana。
-4. Grafana provisioning 自动加载 SQLite 数据源 + 基础看板（金额分布 / 流向占比 / 活动时间线）。
-5. pytest 覆盖 `detect_whales`。
-6. README 含 Mermaid 架构/数据流图 + 运行说明。
+> 分支：`feature/incremental-pipeline` · 环境：`whale_alert_project`（Python 3.11）
+> 本日志记录**本次增量改造**的完整开发过程：背景目标、数据模型、关键决策、踩坑与修复、
+> 5 个新增 Panel 的 SQL 与计算逻辑、验证结果、运行与调度。
+> 基础版（「单次运行 + 快照数据」）的设计见主分支 `main` 的 `docs/development-log.md`。
 
 ---
 
-## 二、模块实现思路与关键决策
+## 一、背景与目标
 
-### 1. `config.py` —— 配置加载
+主分支 `main` 的检查器每轮轮询都重扫「最近 `SCAN_BLOCK_WINDOW` 个区块」，数据库本质是一份**滚动快照**：
+- 数据不累积，时间序列（DoD / 7 日 / 30 日）分析无从谈起；
+- 区块区间重叠、重复扫描，免费 API 额度被浪费。
 
-**思路**：所有下游模块从这里拿配置，方便测试时 mock。
-
-**关键决策**：
-- 环境文件是用户手动创建的，文件名带空格 `environment .env`。加载优先级为
-  `environment .env` → `.env` → OS 环境变量（Docker 通过 `env_file` 注入即是 OS 环境变量）。
-- 提供 `_get_int()` 把字符串强转成 int，避免类型错误。
-
-### 2. `etherscan_client.py` —— Etherscan V2 客户端 + `detect_whales`
-
-**思路**：把「网络 IO」与「纯判断逻辑」分离，纯函数便于单测。
-
-**关键决策（踩坑记录，重要）**：
-- **必须用 Etherscan API V2**。实测 V1 端点（`https://api.etherscan.io/api`）已废弃，返回
-  `"You are using a deprecated V1 endpoint, switch to Etherscan API V2"`。改用
-  `https://api.etherscan.io/v2/api`，并增加 `chainid=1` 参数。
-- **`txlistinternal` 是 Pro 专属**，免费 key 会返回 `NOTOK: API Pro endpoint`。
-  因此改用免费的 `proxy/eth_getBlockByNumber`，逐个读取区块，抽取带 `value` 的对外 ETH 转账。
-- 区块返回的 `value` 是 **hex（如 `0x0`）**，需 `int(value, 16)` 再除以 `1e18` 转成 ETH。
-- **免费额度约 5 req/s**。并发回填时大量触发 `rate limit reached`（此时 `result` 是字符串），
-  因此在 `_get()` 中增加：对非 dict 的 `result` 跳过 + 遇到 rate limit 自动退避重试。
-- `detect_whales(transfers, threshold_usd, eth_price_usd)`：`value_usd = value_eth * price`，
-  当 `value_usd >= threshold` 判为巨鲸，并附加 `direction`（交易所流向分类）。纯函数，不修改入参。
-
-**交换所流向分类**：内置一份精简的交易所地址集（Binance / Coinbase / Kraken），
-根据 `to` / `from` 判断 `exchange_inflow` / `exchange_outflow` / `peer_to_peer`。
-
-### 3. `database.py` —— SQLite 存储
-
-**思路**：`WhaleDatabase` 类封装 `sqlite3`，建表幂等。
-
-**关键决策**：
-- 表 `whale_transfers`，关键字段：`tx_hash / block_number / timestamp / from/to / value_eth / value_usd / direction / created_at`。
-- `tx_hash` 建**唯一索引**实现去重，重复插入返回 `False`（防止轮询重复入库）。
-- 开启 **WAL 模式**，允许 Python 写入与 Grafana 只读并发访问。
-- DB 放在 `./data/whale_alert.db`，与 Grafana 容器用 bind-mount `./data` 共享。
-
-### 4. `whale_alert.py` —— 主入口 / 预警
-
-**思路**：循环轮询（默认 `POLL_INTERVAL_SECONDS`），每次：取价格 → 取最新区块 → 扫最近
-`SCAN_BLOCK_WINDOW` 个区块 → `detect_whales` → 写库 → 终端打印预警。
-
-**关键决策**：
-- 提供 `--once` 一次性模式（便于测试/定时任务）。
-- 巨鲸记录通过 `tx_hash` 去重后才 `insert`；即使重复轮询，DB 也累积不重复。
-- 终端预警打印明确的交易方向、发送/接收方与 hash。
-
-### 5. `backfill.py` —— 历史回填工具
-
-**思路**：准实时轮询检查器每次只扫很小区间，`$10M` 级别巨鲸相对稀少，看板可能在较长时间内没有数据。
-用线程池并发扫描更大历史窗口，把真实巨鲸一次性灌入 DB，快速填充看板。
-
-**关键决策**：并发度 `MAX_WORKERS=3`，配合 `_get()` 的退避重试以尽量不触发免费额度限制；
-单位块失败（rate limit）自动跳过，不影响整体。
-
-### 6. Docker / Compose 编排
-
-**思路**：
-- `whale-checker`：`python:3.11-slim`，`CMD python whale_alert.py`，密钥/阈值经 `env_file` 注入（不入镜像）。
-- `grafana`：`grafana/grafana:11.1.1`，通过 `GF_INSTALL_PLUGINS=frser-sqlite-datasource` 安装社区 SQLite 数据源插件（官方 Grafana 无内置 SQLite 连接器）。
-- `./data` 同时挂到 checker（读写）与 grafana（只读 → `/data`），两者读写同一个 `whale_alert.db`。
-
-**关键决策**：Grafana 数据源 `path: /data/whale_alert.db`，previsioning 自动加载，无需手动配置。
-
-### 7. 看板模板（`grafana/dashboards/whale_dashboard.json`）
-
-**思路**：`frser-sqlite-datasource` 通过 `rawSql` 查询 SQLite。为降低对宏的依赖、保证开箱可用，
-面板 SQL 使用 `strftime('%s','now','-24 hours')` 显式取“最近 24h”。
-
-三个面板：
-1. **24h 巨鲸金额分布**：按小时 `SUM(value_usd)`，把该小时起始时刻转成 `time`（毫秒）作时间轴。
-2. **按交易所流向占比**：`COUNT(*)` 按 `direction` 分组，饼图展示 `inflow/outflow/peer`。
-3. **巨鲸活动时间线**：明细表（时间 / 发送 / 接收 / ETH / USD / 流向），按时间倒序。
-
-### 8. 测试 `tests/test_whale_alert.py`
-
-**思路**：只测纯函数 `detect_whales`（无网络/DB），快速稳定。
-用例：全低于阈值、命中阈值、边界值等于阈值、入参不被修改、方向分类。
+**本次目标**：把「快照式看板」升级为「**持续累积的数据资产**」——
+1. 每次只扫「上次扫描区块之后」的新数据；
+2. 以 `tx_hash` 幂等去重后**追加**；
+3. 用检查点 `scan_state.last_scanned_block` 断点续扫；
+4. 支持 **cron / Cline Schedule 每日调度**；
+5. 看板新增 5 个时间序列面板，默认 **Last 7 days**。
 
 ---
 
-## 三、Grafana 看板 Insights（基于实际落库数据）
+## 二、数据模型改造（`database.py`）
 
-> 数据源：`data/whale_alert.db`。回填窗口约 **2500 个区块（≈8 小时链上时间）**，
-> ETH 价格 ~2,682 USD，阈值 $10,000,000。共入库 **5** 笔巨鲸交易。
+### 2.1 `whale_transfers.tx_hash` 加唯一约束 + `INSERT OR IGNORE`
 
-### 实测明细（真实数据）
+```sql
+CREATE TABLE IF NOT EXISTS whale_transfers (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    tx_hash      TEXT    NOT NULL UNIQUE,   -- 唯一约束：保证追加写入幂等
+    block_number INTEGER,
+    timestamp    INTEGER,
+    from_address TEXT,
+    to_address   TEXT,
+    value_eth    REAL,
+    value_usd    REAL,
+    direction    TEXT,
+    created_at   TEXT DEFAULT (datetime('now'))
+);
 
-| 时间 (本地) | ETH | USD | 方向 | 路径 (from → to) |
-| --- | --- | --- | --- | --- |
-| 18:22:23 | 15,340 | $41.14M | exchange_outflow | `0x28c6c0…`(Binance) → `0xdfd529…` |
-| 11:08:11 | 15,613 | $41.88M | peer_to_peer | `0xb0a270…` → `0x0003b5…` |
-| 11:12:59 | 15,613 | $41.88M | peer_to_peer | `0x0003b5…` → `0xa9ac43…` |
-| 18:37:59 | 14,565 | $39.06M | peer_to_peer | `0xb0a270…` → `0x0003b5…` |
-| 18:40:11 | 14,565 | $39.06M | peer_to_peer | `0x0003b5…` → `0xa9ac43…` |
+-- 兼容旧库（CREATE TABLE IF NOT EXISTS 不会给已存在的表补列级约束）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_whale_tx_hash ON whale_transfers(tx_hash);
+```
 
-### 核心发现
+写入由「`INSERT` + 捕获 `IntegrityError`」改为直接忽略：
 
-1. **存在结构化的“巨鲸接力链”**：`0xb0a270…` → `0x0003b5…` → `0xa9ac43…` 三地址在
-   **两个独立时段**重复出现，且前后两笔金额**完全相等**（11:08/11:12 各 15,613 ETH；
-   18:37/18:40 各 14,565 ETH），相隔仅 2–5 分钟。这是典型的**中间地址过账/接力转账**模式
-   （可能为机构/做市商内部归集或链上中转），说明单看 tx_hash 会错过“同一巨鲸动作的完整链路”。
-2. **本窗口净流向为「出所 + 点对点」**：1 笔从 Binance 提币至外部地址，其余为链上点对点，
-   未见 `exchange_inflow`——即本时段巨鲸倾向于**从交易所提走 / 链上转移**而非“入所待抛”。
-3. **峰值金额 $41.88M、集中在 15,613 / 15,340 / 14,565 ETH** 三个档位，量级高度一致，
-   提示这些是本轮巨鲸“整百/整千 ETH”式的大额批处理操作。
+```python
+cur = self.conn.execute(
+    """
+    INSERT OR IGNORE INTO whale_transfers
+        (tx_hash, block_number, timestamp, from_address, to_address,
+         value_eth, value_usd, direction)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """,
+    (...),
+)
+self.conn.commit()
+return cur.rowcount > 0   # 0 表示重复被忽略
+```
 
-### 三条 Data-driven Suggestions
+### 2.2 新增检查点表 `scan_state`
 
-1. **按“资金流链路”而非“单笔”建立预警/关联模型**
-   实测证明同一中间地址在分钟级内接收并转发相同金额。建议对 `from–to–金额-时间窗` 做图聚类，
-   把 `A→中转→B` 合并为一个“巨鲸动作”，并对其中的**重复中转地址**建立监控白名单/黑名单特征。
+```sql
+CREATE TABLE IF NOT EXISTS scan_state (
+    id                 INTEGER PRIMARY KEY CHECK (id = 1),  -- 单行
+    last_scanned_block INTEGER NOT NULL DEFAULT 0,
+    updated_at         TEXT DEFAULT (datetime('now'))
+);
+```
 
-2. **把「交易所净流入/流出」与价格叠加成抛压信号**
-   当 `exchange_inflow` 小时金额放大且 ETH 处于相对高位时，往往是短期抛压的领先指标。
-   建议新增面板：交易所净流入曲线 + ETH 价格叠加，并设置阈值告警；同时追踪“交易所提币大户”去向。
+配套读写方法：
 
-3. **多级阈值 + 扩充交易所地址清单**
-   仅 1/5 笔命中内置交易所地址集（覆盖率不足）。建议新增 `$1M`「关注级」，并把
-   `EXCHANGE_ADDRESSES` 扩成外部可维护清单（更多交易所/做市商/矿池），提升流向归因覆盖率。
+```python
+def get_last_scanned_block(self) -> int:
+    row = self.conn.execute(
+        "SELECT last_scanned_block FROM scan_state WHERE id = 1"
+    ).fetchone()
+    if row is not None:
+        return int(row[0])
+    # 首次运行：用已有数据里的最大区块初始化，避免重扫快照里的历史
+    seed = self.conn.execute(
+        "SELECT COALESCE(MAX(block_number), 0) FROM whale_transfers"
+    ).fetchone()
+    value = int(seed[0] or 0)
+    self.set_last_scanned_block(value)
+    return value
 
-> 说明：以上为当前回填窗口的实测快照；随着持续轮询或更大回填窗口（`python backfill.py --blocks N`），
-> 命中数与占比会动态变化，可重新运行看板查询得出新结论。
-
----
-
-## 五、本次优化 (v2) —— 思路、决策与新增能力
-
-> 本次优化聚焦：**更低的巨鲸阈值、自动分页回填、巨鲸地址画像、价格曲线采样、更丰富的看板**。
-
-### 5.1 阈值下调：`WHALE_THRESHOLD_USD 10000000 → 500000`
-- **决策**：初版 $10M 粒度的“巨鲸”在大时间窗内稀疏（2h 仅 3 笔），不利于准实时预警与看板分析。
-  下调至 `$500,000` 可捕获更多“中大型”链本币转账，且更贴近“机构/做市商级动作”。
-- **实现**：修改 `.env.example` 与 `config.py` 的兜底默认值。注意——`environment .env` 是用户实测文件，
-  若其中显式写了 `WHALE_THRESHOLD_USD`，会覆盖默认值；本优化只改默认（README 已说明）。
-
-### 5.2 `backfill.py` 自动分页
-- **需求**：用 `startblock`/`endblock` 循环调用 Etherscan，每次请求 `offset=1000`，自动翻页直到取完区块范围。
-- **实现**：按“页”遍历 `[start_block, end_block]`，每页最多处理 `--offset`（默认 1000）个区块，
-  同一页内并发拉取区块，页末自动 `cursor = page_end + 1` 前移到下一页，直到 `page_end >= end_block` 结束。
-- **关键决策（实测约束）**：Etherscan 的 `account/txlistinternal`（原生按区块区间批量查询）为 **Pro 专属**，
-  免费 key 不可用，因此把“按页翻取”落在免费的 `proxy/eth_getBlockByNumber` 上（每页=1000 区块）。
-  每页写一条 `eth_price_ticks` 采样，支撑看板价格曲线。
-
-### 5.3 `src/address_profiler.py` —— 巨鲸地址画像
-- **思路**：高级分析关注的“链上身份证”：知道它有多少钱、持仓什么稳定币、动得多频繁、是不是合约。
-- **数据维度**（每个巨鲸地址）：
-  - ETH 余额 `/account/balance`（wei→ETH）与 **ETH 美元敞口 = ETH余额 × 现价**；
-  - 三大稳定币持仓 `/account/tokenbalance`（USDT / USDC / DAI，6/6/18 位小数缩放）+ 稳定币合计 USD；
-  - 交易频次 `/account/txlist` 统计 **24h / 7d 频次、最近活跃时间、观测到的流入/流出 ETH、平均/最大单笔**；
-  - **合约探测** `/contract/getsourcecode`、**链上标签** `/account/getaddresstag`（分析师的“身份线索”）。
-- **写入**：`address_profiles` 表，`address` 为主键（INSERT OR REPLACE，可增量）。
-- **触发**：主检查器每轮对新地址画像；`backfill` 回填后自动画像；也可 `python -m src.address_profiler [--force]` 独立运行。
-
-### 5.4 价格采样 `eth_price_ticks`
-- 每个扫描/回填页写入一条 `(ts, price_usd)`，用于看板“ETH 价格曲线 + 巨鲸金额散点”面板。
-
-### 5.5 Docker / Grafana 插件
-- `docker-compose.yml` 新增 `GF_PLUGINS_PREINSTALL`，并在 `GF_INSTALL_PLUGINS` 中加入 **Percentage Trend** 插件。
-- **决策（插件 id 校准）**：需求中的 `grafana-percentage-trend-panel` 是查询到的“显示名”；
-  实际可下载的官方社区插件（Grafana Labs，Niko Schmuck）id 为 **`nikosc-percenttrend-panel`**。
-  为保证真实可安装、可渲染，`docker-compose.yml` 与看板 `type` 使用 `nikosc-percenttrend-panel`（已注明）。
-
-### 5.6 看板扩展（3 → 8 面板）
-1. 24h 巨鲸金额分布（柱）  2. 流向占比（饼）  3. 巨鲸活动时间线（表）
-4. **ETH 价格曲线 + 巨鲸金额散点**（Timeseries，对数轴，`eth_price_ticks` 采样）
-5. **今日巨鲸交易统计**（Stat：今日笔数/总额/单笔最大）
-6. **按交易所流向的金额分布**（Bar Chart）
-7. **巨鲸地址画像**（Table：余额/稳定币/频次/合约/ETH 敞口/标签）
-8. **本周 vs 上周巨鲸交易金额环比**（Percentage Trend，`nikosc-percenttrend-panel`）
-
-### 5.7 v2 数据洞察（基于 $500K 数据实测）
-> 见下节「六、v2 实测 Insights」。
+def set_last_scanned_block(self, block_number: int) -> None:
+    self.conn.execute(
+        """
+        INSERT INTO scan_state (id, last_scanned_block, updated_at)
+        VALUES (1, ?, datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET
+            last_scanned_block = excluded.last_scanned_block,
+            updated_at = datetime('now')
+        """,
+        (int(block_number),),
+    )
+    self.conn.commit()
+```
 
 ---
 
-## 六、v2 实测 Insights（$500,000 阈值）
+## 三、扫描流程改造（`whale_alert.py` / `etherscan_client.py` / `config.py`）
 
-> 数据源：`data/whale_alert.db`；ETH 现价 ≈ $2,700，阈值 $500,000（≈185 ETH）。
-> 采集方式：对若干**当前活跃**的交易所热钱包调用 `account/txlist`（`offset=1000`，`sort=desc`）取最近大额转账。
+**`etherscan_client.py`** 新增按显式区间扫描的函数（区别于固定的「最近窗口」）：
 
-### 实测概览
-- **巨鲸交易**：18 笔，其中 **11 笔发生在最近 24 小时**；总金额约 **$74.3M**。
-- **按流向金额**：`exchange_inflow` $40.5M（8 笔）、`exchange_outflow` $28.4M（6 笔）、`peer_to_peer` $5.4M（4 笔）。
-  → 本窗口**净流入交易所**（$40.5M 进 vs $28.4M 出），偏向「入所」，需结合价格判断抛压。
-- **地址画像**：20 个地址；`0x28c6c0…`(Binance 热钱包) ETH 余额 **85,457 ETH**（≈$2.3 亿）、
-  `0xdfd529…` 22,210 ETH、`0x21a31e…` 21,153 ETH、`0x9696f5…` 19,040 ETH——典型交易所/托管巨鲸特征（非合约、24h 活跃度高）。
+```python
+def scan_block_range(api_key, threshold_usd, start_block, end_block):
+    eth_price_usd = get_eth_price_usd(api_key)
+    transfers = fetch_block_transfers(api_key, start_block, end_block)
+    return detect_whales(transfers, threshold_usd=threshold_usd, eth_price_usd=eth_price_usd)
+```
 
-### 三条 Data-driven Suggestions（v2）
-1. **净流入交易所 = 潜在抛压**：实测净流入 $12.1M，若价格处于高位需警惕短期抛压；建议把「交易所净流入」做独立面板并叠加价格。
-2. **监控高频热钱包**：$500K 阈值下，交易所热钱包贡献了绝大多数命中；建议对 `EXCHANGE_ADDRESSES` 中“24h 交易频次高”的地址加权监控。
-3. **画像驱动风险分层**：以「ETH 敞口 + 稳定币持仓 + 是否合约」对地址分层，把“巨额 ETH 敞口 + 大量稳定币”的地址列为高优先级观察对象。
+**`config.py`** 新增免费额度保护上限：
 
-### 5.8 本轮踩坑与修复（重要）
-- **frser-sqlite-datasource v4 查询模型变更**：v4.x 的查询字段是
-  `rawQueryText` / `queryText` / `queryType`（"table" | "time series"）/ `timeColumns`，
-  **不再是** v3 的 `rawSql` / `query` / `format`。用旧字段会导致所有面板查询返回空。
-  看板 JSON 已按 v4 模型改写（11 个 target）。
-- **`account/txlist` 默认 `sort=asc`**：会返回“最老”的交易，导致画像的 24h/7d 频次错误、
-  取数取到多年前的数据。已改为默认 `sort=desc`。
-- **区块级 `eth_getBlockByNumber` 极易触发免费额度 429**：新增 `BACKFILL_WORKERS`（默认 3）
-  可下调并发（`=1` 最稳）以规避限流。
+```python
+SCAN_MAX_BLOCK_SPAN = _get_int("SCAN_MAX_BLOCK_SPAN", 2000)
+```
 
-### 5.9 准实时轮询架构（而非流式实时）
-- 本系统采用**准实时轮询（Polling）**：`whale_alert.py` 每隔 `POLL_INTERVAL_SECONDS`（`.env`，默认 60s）
-  拉取最新区块并处理，**不是** WebSocket 流式推送。
-- **原因**：Etherscan 免费 API 不提供 WebSocket 推送；Alchemy / Infura 的 `newHeads` 订阅需付费节点。
-  把轮询间隔缩短到 **10–15 秒**可近似实时。
-- **覆盖率**：当前 DB 覆盖最近约 **7,200 个区块（约 24 小时）**；回填范围由
-  `backfill.py --blocks N` / `--start/--end` 控制，注意免费额度 10 万次/天。
-- **公开快照**：`GF_SNAPSHOTS_ENABLED` / `GF_SNAPSHOTS_EXTERNAL_SNAPSHOT_URL` /
-  `GF_SECURITY_ALLOW_EMBEDDING` 已开启，可发布到 snapshots.raintank.io，生成不依赖本地 Docker 的公开链接。
-- **SQLite 挂载修正**：Grafana 需以 `:rw` 挂载 `./data`，否则 SQLite 无法创建 WAL 的 `-shm` 文件，
-  所有面板会显示 “No data”。
+**`whale_alert.py`** 的 `run_scan` 改为「读检查点 → 续扫新块 → 写库 → 推进检查点」：
+
+```python
+latest = get_latest_block(api_key)
+last_scanned = db.get_last_scanned_block()
+start = last_scanned + 1
+# 离线过久时，把一次补扫限制在最新 SCAN_MAX_BLOCK_SPAN 个区块内
+floor = max(latest - config.SCAN_MAX_BLOCK_SPAN + 1, 0)
+if start < floor:
+    start = floor
+if start > latest:
+    whales = []                       # 没有新块
+else:
+    whales = scan_block_range(api_key, config.WHALE_THRESHOLD_USD, start, latest)
+
+for whale in whales:
+    if db.insert_whale(whale):        # INSERT OR IGNORE
+        saved += 1
+
+if latest is not None:
+    db.set_last_scanned_block(latest) # 扫描成功后才推进检查点
+```
 
 ---
 
-## 七、增量累积与数据资产化（feature/incremental-pipeline）
+## 四、关键决策
 
-> 目标：把「快照式看板」升级为「持续累积的数据资产」。主分支保持干净快照版，本分支展示增量设计。
-> 详细说明见 [docs/incremental-pipeline.md](incremental-pipeline.md)。
+1. **幂等优先**：把唯一性放在**列级约束** `tx_hash UNIQUE`，配合 `INSERT OR IGNORE`，
+   写入天然幂等、可安全重放，即便调度重叠或重跑也不会产生脏数据。
+2. **检查点而非「最近 N 块」**：用 `scan_state.last_scanned_block` 表达「已扫到哪」，
+   语义清晰，且重启 / 漏跑后可自动续扫。
+3. **检查点初始化取 `MAX(block_number)`**：仓库自带历史数据（回填产物），
+   若从 0 开始会重扫全部历史；用已有最大区块初始化，首轮只补最新增量。
+4. **一次补扫设上限 `SCAN_MAX_BLOCK_SPAN`（2000）**：避免离线很久后一次性打爆免费额度
+   （Etherscan 免费 ~5 req/s、10 万/天）。
+5. **检查点「成功才推进」**：扫描抛异常时保持原值，下轮自动重试，不丢区间。
+6. **新增 Panel 刻意避开窗口函数**：改用**相关子查询**实现 DoD / 滚动平均 / 累计净额，
+   不依赖插件底层 SQLite 的窗口函数支持，保证开箱即用。
+7. **时间范围改 `now-7d`**：与「7 日时间序列」口径一致（原为 `now-31d`）。
 
-### 7.1 需求与设计动机
-- 主分支每次轮询重扫「最近 N 块」，DB 只是滚动快照；DoD / 7 日 / 30 日等时间序列分析无从谈起。
-- 本分支引入**扫描检查点（`scan_state`）**：记录 `last_scanned_block`，每轮只扫「检查点 + 1 … 最新块」。
-- 去重从「唯一索引 + 捕获 `IntegrityError`」改为 **列级 `tx_hash UNIQUE` + `INSERT OR IGNORE`**，写入天然幂等、可安全重放。
-- 数据只增不减 → 时间越久，7d/30d 的分析越有意义（**数据资产化**）。
+---
 
-### 7.2 改动清单
+## 五、踩坑与修复
 
-| 文件 | 改动 |
-| --- | --- |
-| `database.py` | `whale_transfers.tx_hash` 加 `UNIQUE` 约束；写入改 `INSERT OR IGNORE`；新增 `scan_state` 表与 `get_last_scanned_block()` / `set_last_scanned_block()` |
-| `config.py` | 新增 `SCAN_MAX_BLOCK_SPAN`（默认 2000），保护离线过久时的免费额度 |
-| `etherscan_client.py` | 新增 `scan_block_range(api_key, threshold, start, end)`，按显式区间扫描 |
-| `whale_alert.py` | `run_scan` 改为「读检查点 → 续扫新块 → 写库 → 推进检查点」，只扫新块 |
-| `grafana/dashboards/whale_dashboard.json` | 新增 5 个时间序列面板 + 7D/30D 预留位，默认 Last 7 days |
-| `tests/test_incremental.py` | 新增 `scan_state` / 去重 单测 |
-| `docs/incremental-pipeline.md` | 本分支专属文档（clone / 镜像 / 预留位 / 洞察留空） |
+| # | 现象 | 原因 | 修复 |
+| --- | --- | --- | --- |
+| 1 | 老库 `scan_state` 不存在 | `CREATE TABLE IF NOT EXISTS` 只对新库生效；快照库是旧 schema | `WhaleDatabase` 初始化时 `executescript` 自动补建 `scan_state`；列级 `UNIQUE` 则用 `CREATE UNIQUE INDEX IF NOT EXISTS` 兼容旧表 |
+| 2 | 首轮增量扫了 1000+ 块 | 快照库最大区块落后当前链头数小时 | 检查点初始化用 `MAX(block_number)`；并用 `SCAN_MAX_BLOCK_SPAN` 兜底 |
+| 3 | 两个分支容器互相冲突 | 容器名 / 端口重复（都叫 `whale-grafana`、都用 3000） | 增量分支改名 `whale-grafana-incremental` / `whale-checker-incremental`，端口改 **3001** |
+| 4 | 增量容器启动还跑了回填 | 复用了主分支 entrypoint 的 `BOOTSTRAP_BLOCKS=2000` | 增量 compose 设 `BOOTSTRAP_BLOCKS=0`，改由检查点驱动 |
+| 5 | 两个容器同 key 抢额度触发 429 | 主/增量同时回填 & 轮询，共享同一 API key | `_get()` 已有退避重试（`BASE_RATE_LIMIT_DELAY` + rate-limit backoff），慢但可自愈 |
 
-### 7.3 关键决策 & 踩坑
-- **检查点初始化**：首次运行（无 `scan_state` 行）时，用 `MAX(block_number)` 初始化，避免对快照里已有的历史重复扫描。
-- **回填上限**：若 `last_scanned_block + 1` 落后最新块超过 `SCAN_MAX_BLOCK_SPAN`（离线很久 / 全新库），只扫最新 N 块，避免一次消耗过多免费额度。
-- **刻意避开窗口函数**：面板 SQL 用相关子查询实现 DoD / 滚动平均 / 累计净额，避免依赖插件底层 SQLite 的窗口函数支持，保证开箱即用。
-- **检查点只在成功后推进**：扫描抛异常时保持 `last_scanned_block` 不变，下轮自动重试，不会丢数据。
-- **看板时间范围**：默认由 `now-31d` 改为 **`now-7d`**（Last 7 days），与增量时间序列口径一致。
+---
 
-### 7.4 验证
-- `pytest`：**8 passed**（含 3 个增量单测：唯一约束/去重、检查点初始化、检查点 upsert）。
-- 实测 `python whale_alert.py --once`：`scan_state` 从 `26127513` → `26127515`（第二轮仅扫了新增的 2 个区块），确认「只扫新块 + 状态结转」生效。
-- 看板 JSON：13 个面板 + 1 个预留位；5 个新面板 SQL 均在快照库上执行通过。
+## 六、5 个新增时间序列 Panel 的 SQL 与计算逻辑
 
-### 7.5 数据洞察
-> 见 [docs/incremental-pipeline.md](incremental-pipeline.md) 第 6 节 —— **先留空，待累积数日后补齐 7d/30d 洞察**。
+> 面板默认时间范围 **Last 7 days**。为兼容插件底层 SQLite，全部用**相关子查询**而非窗口函数。
+
+### 6.1 DoD 环比（每日巨鲸金额 + 日环比%）
+
+```sql
+WITH daily AS (
+  SELECT date(timestamp,'unixepoch','localtime') AS d, SUM(value_usd) AS total
+  FROM whale_transfers
+  GROUP BY d
+)
+SELECT
+  CAST(strftime('%s', d) AS INTEGER) AS time,
+  ROUND(total, 0) AS '日总额(USD)',
+  ROUND(
+    (total - (SELECT total FROM daily p WHERE p.d < daily.d ORDER BY p.d DESC LIMIT 1))
+    * 100.0
+    / NULLIF((SELECT total FROM daily p WHERE p.d < daily.d ORDER BY p.d DESC LIMIT 1), 0),
+    2
+  ) AS 'DoD环比%'
+FROM daily
+ORDER BY d;
+```
+**计算逻辑**：先按天汇总金额；再用相关子查询取「比当天早的最近一天」的总额做分母，算 `(今日−昨日)/昨日×100%`。
+**业务含义**：单日相对前一日的**变化速度**，判断巨鲸活动升温/降温。
+
+### 6.2 7 日滚动平均
+
+```sql
+WITH daily AS (
+  SELECT date(timestamp,'unixepoch','localtime') AS d, SUM(value_usd) AS total
+  FROM whale_transfers
+  GROUP BY d
+)
+SELECT
+  CAST(strftime('%s', d) AS INTEGER) AS time,
+  ROUND(total, 0) AS '日总额(USD)',
+  ROUND((
+    SELECT AVG(total) FROM daily w
+    WHERE w.d BETWEEN date(daily.d, '-6 days') AND daily.d
+  ), 0) AS '7日滚动平均(USD)'
+FROM daily
+ORDER BY d;
+```
+**计算逻辑**：对每天，取「当天及前 6 天」（`BETWEEN date(d,'-6 days') AND d`）的 `AVG(total)`，即 7 日滑动窗口均值。
+**业务含义**：抹平单日噪声，识别**真实趋势**。
+
+### 6.3 堆叠面积（每日流向金额构成）
+
+```sql
+SELECT
+  CAST(strftime('%s', date(timestamp,'unixepoch','localtime')) AS INTEGER) AS time,
+  ROUND(SUM(CASE WHEN direction='exchange_inflow'  THEN value_usd ELSE 0 END), 0) AS '交易所流入',
+  ROUND(SUM(CASE WHEN direction='exchange_outflow' THEN value_usd ELSE 0 END), 0) AS '交易所流出',
+  ROUND(SUM(CASE WHEN direction='peer_to_peer'     THEN value_usd ELSE 0 END), 0) AS '点对点'
+FROM whale_transfers
+GROUP BY time
+ORDER BY time;
+```
+**计算逻辑**：按天 `GROUP BY`，用 `CASE WHEN` 把金额按 `direction` 透视成三列（宽表），面板 `stacking.mode="normal"` 堆叠。
+**业务含义**：资金**结构变化**——入所（潜在抛压）vs 点对点转移。
+
+### 6.4 热力图（巨鲸交易金额密度）
+
+```sql
+SELECT
+  CAST(timestamp AS INTEGER) AS time,
+  ROUND(value_usd, 0) AS '金额'
+FROM whale_transfers
+ORDER BY time;
+```
+**计算逻辑**：直接给「时间 + 单笔金额」，由 Grafana heatmap（`calculate: true`）按 X=时间、Y=金额自动分桶着色。
+**业务含义**：快速定位**大额集中时段**与金额分布密度。
+
+### 6.5 累计净额（交易所累计净流入）
+
+```sql
+SELECT
+  t AS time,
+  ROUND((
+    SELECT SUM(CASE WHEN direction='exchange_inflow'  THEN value_usd
+                    WHEN direction='exchange_outflow' THEN -value_usd
+                    ELSE 0 END)
+    FROM whale_transfers w2
+    WHERE CAST(w2.timestamp AS INTEGER) <= t
+  ), 0) AS '累计净流入交易所(USD)'
+FROM (SELECT DISTINCT CAST(timestamp AS INTEGER) AS t FROM whale_transfers)
+ORDER BY t;
+```
+**计算逻辑**：对每个时间点 `t`，用相关子查询累加「流入(+)/流出(−)」，得到**累计**净额曲线。
+**业务含义**：区间内的**净抛压 / 承接**方向与强度。
+
+---
+
+## 七、每日运行可视化（`scripts/daily_report.py`）
+
+为了让「每日定时任务」的**运行结果可视化**，新增 `scripts/daily_report.py`：
+
+- 运行 `whale_alert.py --once`（增量扫描）；
+- 查询 SQLite 汇总本次运行状态：运行状态 / 链上拉取状态 / 累积表写入状态 / Grafana 刷新状态 /
+  运行时长 / 本次新增条数 / 最新记录时间戳 / 总记录数 / `last_scanned_block`；
+- 生成 HTML 报告到 `reports/daily_report_YYYYMMDD.html`（含 Grafana 链接 http://localhost:3001）；
+- macOS 上用 `osascript` 弹系统通知（成功：`新增X条，总记录Y条`；失败：`今日运行失败：<原因>`）；
+- 成功后自动用 `webbrowser.open` 打开当天报告；
+- **全程 try/except 包裹**：即使 API 配额耗尽 / 网络断开，也会走到「失败报告 + 失败通知」，绝不静默消失。
+
+调度用法（Cline Schedule / cron）：
+
+```bash
+# Cline Schedule 的每日任务 Prompt
+conda activate whale_alert_project && python scripts/daily_report.py
+
+# 等价系统 cron
+0 15 * * * cd ~/Desktop/whale-alert-system-incremental && \
+  conda run -n whale_alert_project python scripts/daily_report.py
+```
+
+---
+
+## 八、验证
+
+- **单测**：`pytest` → **8 passed**（含 3 个增量单测：唯一约束/去重、检查点初始化、检查点 upsert）。
+- **实测增量**：连续两次 `python whale_alert.py --once`，`scan_state` 从 `26127513` → `26127515`
+  （第二轮仅扫新增 2 块），确认「只扫新块 + 状态结转」。
+- **看板**：JSON 合法，13 个面板 + 1 个预留位；5 个新面板 SQL 均在快照库上执行通过。
+- **双栈并存**：主分支 Grafana 3000、增量分支 Grafana 3001，同时运行互不冲突。
+
+---
+
+## 九、如何运行 / 调度
+
+```bash
+conda activate whale_alert_project
+
+# 单次增量扫描
+python whale_alert.py --once
+
+# 持续增量轮询
+python whale_alert.py
+
+# 每日运行 + HTML 报告 + 系统通知（供定时任务调用）
+python scripts/daily_report.py
+
+# 全栈（Grafana 3001 + 检查器）
+docker compose up -d --build
+```
+
+> 数据洞察先留空，见 [docs/data-insights.md](data-insights.md)。

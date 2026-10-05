@@ -15,46 +15,107 @@ Near-real-time (scheduled polling) monitoring of large ETH transfers on Ethereum
 
 ---
 
-## 🌿 Incremental branch `feature/incremental-pipeline`
+## 🌿 Incremental accumulation mode (feature/incremental-pipeline)
 
-> You are on the **`feature/incremental-pipeline`** branch: on top of the clean
-> "single run + snapshot data" version, it adds the "**accumulating table + scheduled
-> jobs + time-series analysis**" data-asset design.
-> Full details 👉 [docs/incremental-pipeline.md](docs/incremental-pipeline.md).
+This project supports an **incremental accumulation mode**, kept up to date by a **daily cron schedule**:
 
-**Key differences**
+- **Only new data**: each scan **only pulls blocks newer than the last scanned one**, dedups by `tx_hash` and **appends** to the `whale_transfers` table (column-level `tx_hash UNIQUE` + `INSERT OR IGNORE`, idempotent and replayable).
+- **Resumable**: the scan progress is stored in `scan_state.last_scanned_block`, so after a restart or a missed run it resumes from the last position (`SCAN_MAX_BLOCK_SPAN` caps a single catch-up).
+- **Daily scheduling**: schedule it daily via **cron** or **Cline Schedule** to **keep accumulating a data asset**.
+- **Bundled history**: the repository's `data/whale_alert.db` already contains **historical data** backfilled via `backfill.py`, used to demonstrate **multi-day time-series analysis**. To keep it updating, configure a daily job (below).
 
-- **Dedup**: `whale_transfers.tx_hash` gains a `UNIQUE` constraint and inserts become `INSERT OR IGNORE` (idempotent, replayable).
-- **Incremental scan**: a new `scan_state` table records `last_scanned_block`; each cycle scans only **new blocks** and advances the checkpoint, so data keeps accumulating.
-- **Scheduling**: every day at **15:00** it automatically runs `python whale_alert.py --once`, pulling new blocks into SQLite and refreshing the dashboard.
-- **Time series**: the dashboard defaults to **Last 7 days** and adds 5 panels (DoD, 7-day rolling average, stacked area, heatmap, cumulative net), plus reserved **7D / 30D** slots.
-
-**How to clone this branch**
+### Steps to reproduce this after cloning
 
 ```bash
-# Option 1: clone the branch directly
+# 1) Clone the incremental branch
 git clone -b feature/incremental-pipeline \
   ssh://git@ssh.github.com:443/DingBangBang/whale-alert-system.git \
   whale-alert-system-incremental
+cd whale-alert-system-incremental
 
-# Option 2: add a worktree alongside the main checkout
-git worktree add -b feature/incremental-pipeline \
-  ../whale-alert-system-incremental \
-  origin/feature/incremental-pipeline
+# 2) Activate the conda env and install dependencies
+conda activate whale_alert_project      # Python 3.11; create first if needed: conda create -n whale_alert_project python=3.11
+pip install -r requirements.txt
+# Put ETHERSCAN_API_KEY into environment .env (see .env.example)
+
+# 3) Configure the daily schedule (either option)
+# 3a) Cline Schedule (recommended)
+cline schedule create "daily-whale-scan" \
+  --cron "0 15 * * *" \
+  --prompt "conda activate whale_alert_project && python whale_alert.py --once" \
+  --workspace ~/Desktop/whale-alert-system-incremental
+
+# 3b) Or system cron (daily at 15:00)
+# 0 15 * * * cd ~/Desktop/whale-alert-system-incremental && \
+#   conda run -n whale_alert_project python whale_alert.py --once >> logs/cron.log 2>&1
+
+# 4) Data is appended incrementally into data/whale_alert.db; the Grafana dashboard refreshes with it
 ```
 
-**Docker Hub image `daily-whale-scan`**
+### 🐳 Pull the image directly (no build needed)
+
+If you don't want to build it yourself but still want the project, just pull the image:
 
 ```bash
-# Pull and run a single incremental scan (<dockerhub-user> = your Docker Hub namespace)
-docker pull <dockerhub-user>/daily-whale-scan:latest
+docker pull bonnie333333333/daily-whale-scan:latest
+
+# One incremental scan (mount host ./data, inject the key with -e)
 docker run --rm -v "$PWD/data:/app/data:rw" \
   -e ETHERSCAN_API_KEY=your_key \
-  <dockerhub-user>/daily-whale-scan:latest python whale_alert.py --once
+  bonnie333333333/daily-whale-scan:latest python whale_alert.py --once
 ```
 
-> Data insights are **intentionally left empty for now** (7d/30d only become meaningful
-> after several days of accumulation); see section 6 of `docs/incremental-pipeline.md`.
+### 📦 Build & push locally (maintainer)
+
+```bash
+docker build -t bonnie333333333/daily-whale-scan:latest .
+docker push bonnie333333333/daily-whale-scan:latest
+```
+
+---
+
+## Demo Data & Dashboard (7d / 30d)
+
+<!--
+  To be filled once the 30-day accumulated data is generated.
+  Planned content:
+  - the 30-day accumulated data/whale_alert.db (or an archive) with download notes
+  - Last 7 days / Last 30 days time-series dashboard screenshots
+  - coverage window, total record count, whale count, etc.
+-->
+
+> ⏳ To be filled once the 30-day accumulated data is generated (DB file + dashboard screenshots).
+
+---
+
+## 📈 Time-series analysis
+
+On top of the original 8 panels, the dashboard adds the following **5 time-series panels** (default range **Last 7 days**), turning the accumulated data into readable trends:
+
+| Panel | Type | Logic (SQL summary) | Business meaning |
+| --- | --- | --- | --- |
+| **DoD change** (daily whale amount + day-over-day %) | timeseries | Daily `SUM(value_usd)`, plus a correlated subquery for the previous day's total → `(today - yesterday) / yesterday × 100%` | Spot the **day-over-day momentum** — is whale activity heating up or cooling down |
+| **7-day rolling average** | timeseries | Daily totals, then `AVG(total)` over "today + previous 6 days" | Smooth single-day noise and reveal the **true trend** instead of one whale's spike |
+| **Stacked area** (daily flow composition) | timeseries | Daily `GROUP BY`, split by `CASE WHEN direction=...` into exchange-inflow / outflow / peer-to-peer, stacked | See **structural shifts** in capital: into exchanges (potential sell pressure) vs peer-to-peer |
+| **Heatmap** (whale amount density) | heatmap | Each row `(timestamp, value_usd)`, auto-bucketed by Grafana over time/amount | Quickly locate **concentration windows** and the amount distribution density |
+| **Cumulative net** (exchange net inflow) | timeseries | Running sum of `inflow(+)/outflow(-)` per timestamp via a correlated subquery | Gauge the **direction and strength of net sell pressure / absorption** over the window |
+
+> Full SQL and the per-panel computation logic are documented in chapter 7 of [docs/development-log.md](docs/development-log.md).
+
+---
+
+## 🔔 Daily run feedback
+
+After each scheduled run (`python scripts/daily_report.py`):
+
+- an **HTML report** is written to `reports/daily_report_YYYYMMDD.html`;
+- a **macOS system notification** pops up (`osascript`), e.g. "added X rows, Y total"; on failure it also notifies
+  ("today's run failed: <reason>") instead of failing silently;
+- on success the day's HTML report is **opened automatically** in the browser.
+
+Report fields: run status, on-chain fetch status, accumulation-insert status, Grafana refresh status, duration,
+**rows added**, **latest record timestamp**, **total records**, `last_scanned_block`, and the Grafana link
+(http://localhost:3001). See [scripts/daily_report.py](scripts/daily_report.py).
 
 ---
 
