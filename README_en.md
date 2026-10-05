@@ -138,52 +138,84 @@ Report fields: run status, on-chain fetch status, accumulation-insert status, Gr
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ Architecture (incremental branch)
+
+> The incremental branch runs **alongside** the main branch: main Grafana keeps **3000**, this branch uses **3001**. The diagram below shows this branch's components and new capabilities.
 
 ```mermaid
 flowchart LR
-    subgraph Host["Host (Docker Compose)"]
-        C["whale-checker<br/>Python 3.11 image"]
+    subgraph Host["Host (Docker Compose · incremental branch, port 3001)"]
+        SCH["⏰ Cline Schedule / cron<br/>daily 15:00"]
+        DR["scripts/daily_report.py<br/>run --once + summary + HTML + notify"]
+        C["whale-checker-incremental<br/>Python 3.11 image (checkpoint scan)"]
         P["src/address_profiler.py<br/>whale profiles (invoked during scans)"]
-        G["grafana 11 image<br/>sqlite + percent-trend plugins"]
-        V[(./data/whale_alert.db<br/>bind-mount)]
+        G["grafana-incremental<br/>http://localhost:3001"]
+        V[("./data/whale_alert.db<br/>accumulating DB bind-mount")]
+        SD[("seed/whale_alert.db<br/>bundled snapshot")]
+        RP["reports/daily_report_YYYYMMDD.html"]
     end
 
     ES[("Etherscan API V2")]
+    HUB[("Docker Hub<br/>bonnie333333333/daily-whale-scan")]
 
-    C -- "eth_getBlockByNumber / ethprice / balance / tokenbalance / txlist" --> ES
+    SCH --> DR
+    DR -- "python whale_alert.py --once" --> C
+    C -- "eth_blockNumber / eth_getBlockByNumber / ethprice" --> ES
     P -- "balance / tokenbalance / txlist / getaddresstag" --> ES
-    C --> V
+    C -- "INSERT OR IGNORE append + update scan_state" --> V
     P --> V
     C -. "write address profiles + price samples" .-> P
-    G -- "mount read-only /data/whale_alert.db" --> V
-    U["User / browser"] -- "http://localhost:3000" --> G
-
-    C -. "alert to stdout / logs" .-> T["Terminal / Docker logs"]
+    SD -. "seeded on first boot if empty" .-> V
+    V -- "mount read-only /data/whale_alert.db" --> G
+    U["User / browser"] -- "http://localhost:3001" --> G
+    DR --> RP
+    DR -. "osascript system notification" .-> N["macOS Notification Center"]
+    HUB -. "docker pull (reuse image)" .-> C
 ```
 
 ---
 
-## 🔄 Data Flow
+## 🔄 Data Flow (incremental accumulation)
 
 ```mermaid
 flowchart TD
-    A["environment .env<br/>API Key / threshold / poll interval"] --> B[config.py]
+    A["environment .env<br/>API Key / threshold / poll interval / SCAN_MAX_BLOCK_SPAN"] --> B[config.py]
     B --> C[etherscan_client.py]
-    C -->|1. fetch ETH price| E1["stats/ethprice"]
-    C -->|2. fetch latest block| E2["proxy/eth_blockNumber"]
-    C -->|3. read transfers per block| E3["proxy/eth_getBlockByNumber"]
-    E1 & E2 & E3 --> D["transfer records<br/>value_eth / from / to / ts"]
+
+    subgraph Inc["Incremental scan (whale_alert.py --once / polling)"]
+        ST[("scan_state<br/>last_scanned_block")]
+        R1["start = last_scanned + 1<br/>(cap catch-up to latest SCAN_MAX_BLOCK_SPAN blocks)"]
+        R2{"new blocks?"}
+        R3["skip: No new blocks"]
+        R4["scan_block_range<br/>scan only start..latest"]
+    end
+
+    C --> R1
+    ST --> R1
+    R1 --> R2
+    R2 -- "no" --> R3
+    R2 -- "yes" --> R4
+    R4 -->|"eth_getBlockByNumber (per block, skip on failure)"| ES[("Etherscan API V2")]
+    ES --> D["transfer records<br/>value_eth / from / to / ts"]
     D --> F{"detect_whales<br/>value_usd >= threshold?"}
     F -- "no" --> X["ignore"]
     F -- "yes" --> H["classify_direction<br/>inflow/outflow/peer"]
-    H --> I[WhaleDatabase<br/>write whale_alert.db]
+    H --> I[("WhaleDatabase<br/>INSERT OR IGNORE (tx_hash UNIQUE)")]
     I --> J["terminal alert 🔔"]
-    I --> R[src/address_profiler.py<br/>balance / stablecoin holdings / frequency]
-    R --> I
+    I --> RP2[src/address_profiler.py<br/>balance / stablecoin holdings / frequency]
+    RP2 --> I
+    I -->|"advance only on success"| ST
 
-    E1 --> Pt["eth_price_ticks samples"] --> I
-    I --> K["Grafana<br/>amount distribution / price + scatter / today's stats / flow bars / address profiles / week-over-week"]
+    subgraph Sched["Daily schedule (Cline Schedule / cron · 15:00)"]
+        S1["scripts/daily_report.py"] --> S2["run whale_alert.py --once"]
+        S1 --> S3["query SQLite for run status"]
+        S3 --> S4["write reports/daily_report_YYYYMMDD.html"]
+        S4 --> S5["osascript notification + open browser"]
+    end
+    S2 -. "trigger incremental scan" .-> R1
+
+    I --> K["Grafana (3001) · Last 7 days<br/>DoD / 7-day rolling avg / stacked area / heatmap / cumulative net<br/>+ reserved 7D·30D slots"]
+    K -. "read ./data/whale_alert.db" .-> I
 ```
 
 ---
@@ -249,21 +281,21 @@ python -m src.address_profiler --force    # full re-profiling
 ### Option 2: Docker Compose (recommended)
 
 ```bash
-git clone <repo>
-cd whale-alert-system        # or: cd /path/to/whale-alert-system
+cd whale-alert-system-incremental   # the incremental branch folder
 
-# Build and start the containers; the container automatically backfills + polls
+# Build and start the containers (Grafana binds 3001; the checker scans only new
+# blocks from the scan_state checkpoint, accumulating over time)
 docker compose up -d --build
 
-# Follow the whale alert logs
-docker compose logs -f whale-checker
+# Follow the incremental scan logs (container: whale-checker-incremental)
+docker compose logs -f whale-checker-incremental
 ```
 
-Once running, open Grafana at **http://localhost:3000**
+Once running, open Grafana at **http://localhost:3001** (the main branch keeps **3000**; both can run together)
 
 - Login: default `admin` / `admin`
 - The data source and dashboard are auto-loaded via provisioning — no manual configuration required.
-- **Works out of the box (fully automatic)**: on first boot `docker-entrypoint.sh` seeds the live database from the committed snapshot (`seed/whale_alert.db`), so you **see a populated dashboard immediately even before configuring an API key**. It then automatically backfills the newest **2000 blocks** (`BOOTSTRAP_BLOCKS`; re-run with `FORCE_BACKFILL=1`) and enters continuous polling. For live, continuously-updating data, just provide `ETHERSCAN_API_KEY` in `environment .env`.
+- **Incremental accumulation (one-click start)**: on first boot, if the live DB is empty it is seeded from the committed snapshot (`seed/whale_alert.db`); afterwards it scans **only the blocks after `last_scanned_block`** and appends via `INSERT OR IGNORE`, advancing the checkpoint only on success. For continuously-updating data, provide `ETHERSCAN_API_KEY` in `environment .env` and configure the daily schedule (step 3 above / `scripts/daily_report.py`).
 
 > **Plugin note**: the "Percentage Trend" panel from the requirements uses the official community plugin (Grafana Labs); its installable id is
 > `nikosc-percenttrend-panel` (`grafana-percentage-trend-panel` is the display name, not the actual plugin id).

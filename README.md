@@ -141,52 +141,84 @@ docker push bonnie333333333/daily-whale-scan:latest
 
 ---
 
-## 🏗️ 架构图
+## 🏗️ 架构图（增量分支）
+
+> 增量分支与主分支**并存**：主分支 Grafana 占 **3000**，本分支占 **3001**。下图为本分支的组件与新增能力。
 
 ```mermaid
 flowchart LR
-    subgraph Host["宿主机 (Docker Compose)"]
-        C["whale-checker<br/>Python 3.11 镜像"]
+    subgraph Host["宿主机 (Docker Compose · 增量分支，端口 3001)"]
+        SCH["⏰ Cline Schedule / cron<br/>每天 15:00"]
+        DR["scripts/daily_report.py<br/>跑 --once + 汇总 + HTML + 通知"]
+        C["whale-checker-incremental<br/>Python 3.11 镜像（检查点扫描）"]
         P["src/address_profiler.py<br/>巨鲸画像（随扫描调用）"]
-        G["grafana 11 镜像<br/>sqlite + percent-trend 插件"]
-        V[(./data/whale_alert.db<br/>bind-mount)]
+        G["grafana-incremental<br/>http://localhost:3001"]
+        V[("./data/whale_alert.db<br/>累积库 bind-mount")]
+        SD[("seed/whale_alert.db<br/>随仓库内置快照")]
+        RP["reports/daily_report_YYYYMMDD.html"]
     end
 
     ES[("Etherscan API V2")]
+    HUB[("Docker Hub<br/>bonnie333333333/daily-whale-scan")]
 
-    C -- "eth_getBlockByNumber / ethprice / balance / tokenbalance / txlist" --> ES
+    SCH --> DR
+    DR -- "python whale_alert.py --once" --> C
+    C -- "eth_blockNumber / eth_getBlockByNumber / ethprice" --> ES
     P -- "balance / tokenbalance / txlist / getaddresstag" --> ES
-    C --> V
+    C -- "INSERT OR IGNORE 追加 + 更新 scan_state" --> V
     P --> V
     C -. "写地址画像 + 价格采样" .-> P
-    G -- "挂载只读 /data/whale_alert.db" --> V
-    U["用户 / 浏览器"] -- "http://localhost:3000" --> G
-
-    C -. "预警输出到 stdout / 日志" .-> T["终端 / Docker logs"]
+    SD -. "首次启动无数据时灌入" .-> V
+    V -- "挂载只读 /data/whale_alert.db" --> G
+    U["用户 / 浏览器"] -- "http://localhost:3001" --> G
+    DR --> RP
+    DR -. "osascript 系统通知" .-> N["macOS 通知中心"]
+    HUB -. "docker pull 复用镜像" .-> C
 ```
 
 ---
 
-## 🔄 数据流图
+## 🔄 数据流图（增量累积）
 
 ```mermaid
 flowchart TD
-    A["environment .env<br/>API Key / 阈值 / 轮询间隔"] --> B[config.py]
+    A["environment .env<br/>API Key / 阈值 / 轮询间隔 / SCAN_MAX_BLOCK_SPAN"] --> B[config.py]
     B --> C[etherscan_client.py]
-    C -->|1. 获取 ETH 价格| E1["stats/ethprice"]
-    C -->|2. 获取最新区块| E2["proxy/eth_blockNumber"]
-    C -->|3. 按区块读取转账| E3["proxy/eth_getBlockByNumber"]
-    E1 & E2 & E3 --> D["转账记录<br/>value_eth / from / to / ts"]
+
+    subgraph Inc["增量扫描（whale_alert.py --once / 轮询）"]
+        ST[("scan_state<br/>last_scanned_block")]
+        R1["start = last_scanned + 1<br/>（超上限则只补最新 SCAN_MAX_BLOCK_SPAN 块）"]
+        R2{"有新区块?"}
+        R3["跳过：No new blocks"]
+        R4["scan_block_range<br/>只扫 start..最新块"]
+    end
+
+    C --> R1
+    ST --> R1
+    R1 --> R2
+    R2 -- "否" --> R3
+    R2 -- "是" --> R4
+    R4 -->|"eth_getBlockByNumber（逐块，失败跳过）"| ES[("Etherscan API V2")]
+    ES --> D["转账记录<br/>value_eth / from / to / ts"]
     D --> F{"detect_whales<br/>value_usd >= 阈值?"}
     F -- "否" --> X["忽略"]
     F -- "是" --> H["classify_direction<br/>inflow/outflow/peer"]
-    H --> I[WhaleDatabase<br/>写入 whale_alert.db]
+    H --> I[("WhaleDatabase<br/>INSERT OR IGNORE（tx_hash UNIQUE）")]
     I --> J["终端预警 🔔"]
-    I --> R[src/address_profiler.py<br/>余额 / 稳定币持仓 / 频次]
-    R --> I
+    I --> RP2[src/address_profiler.py<br/>余额 / 稳定币持仓 / 频次]
+    RP2 --> I
+    I -->|"成功后才推进"| ST
 
-    E1 --> Pt["eth_price_ticks 采样"] --> I
-    I --> K["Grafana<br/>金额分布 / 价格+散点 / 今日统计 / 流向柱图 / 地址画像 / 周环比"]
+    subgraph Sched["每日调度（Cline Schedule / cron · 15:00）"]
+        S1["scripts/daily_report.py"] --> S2["运行 whale_alert.py --once"]
+        S1 --> S3["查询 SQLite 汇总运行状态"]
+        S3 --> S4["生成 reports/daily_report_YYYYMMDD.html"]
+        S4 --> S5["osascript 通知 + 浏览器打开"]
+    end
+    S2 -. "触发增量扫描" .-> R1
+
+    I --> K["Grafana（3001）· Last 7 days<br/>DoD 环比 / 7 日滚动平均 / 堆叠面积 / 热力图 / 累计净额<br/>+ 7D·30D 预留位"]
+    K -. "读取 ./data/whale_alert.db" .-> I
 ```
 
 ---
@@ -254,20 +286,20 @@ python -m src.address_profiler --force    # 全量重画像
 ```bash
 git clone <repo>
 
-cd whale-alert-system        # 或： cd /path/to/whale-alert-system
+cd whale-alert-system-incremental   # 增量分支目录
 
-# 构建并启动docker容器，此时容器会自动运行轮询+回填数据
+# 构建并启动容器（Grafana 绑定 3001；检查器按 scan_state 检查点只扫新块，持续累积）
 docker compose up -d --build
 
-# 查看巨鲸预警日志
-docker compose logs -f whale-checker
+# 查看增量扫描日志（容器名为 whale-checker-incremental）
+docker compose logs -f whale-checker-incremental
 ```
 
-启动后访问 Grafana：**http://localhost:3000**
+启动后访问 Grafana：**http://localhost:3001**（主分支仍为 **3000**，两者可同时运行）
 
 - 登录：默认 `admin` / `admin`
 - 数据源与看板由 provisioning 自动加载，无需手动配置。
-- **开箱即用（一键全自动）**：首次启动时 `docker-entrypoint.sh` 会先把仓库内置的快照数据（`seed/whale_alert.db`）灌入运行库，因此**哪怕还没配置 API Key，也能立刻看到有数据的看板**；随后自动回填最新 **2000 个区块**（`BOOTSTRAP_BLOCKS`，可用 `FORCE_BACKFILL=1` 重跑）并进入持续轮询。想要「持续更新」的实时数据，只需在 `environment .env` 里提供 `ETHERSCAN_API_KEY`。
+- **增量累积（一键启动）**：首次启动若运行库为空，会灌入仓库内置快照（`seed/whale_alert.db`）；随后**只扫 `last_scanned_block` 之后的新块**并 `INSERT OR IGNORE` 追加，检查点成功才推进。想要「持续更新」，请在 `environment .env` 提供 `ETHERSCAN_API_KEY`，并配置每日调度（见上文步骤 3 / `scripts/daily_report.py`）。
 
 > **插件说明**：需求中的 “Percentage Trend” 面板使用官方社区插件（Grafana Labs），其可安装 id 为
 > `nikosc-percenttrend-panel`（`grafana-percentage-trend-panel` 是显示名，非实际插件 id）。
