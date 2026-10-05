@@ -158,6 +158,7 @@ docker compose logs -f whale-checker
 
 - 登录：默认 `admin` / `admin`
 - 数据源与看板由 provisioning 自动加载，无需手动配置。
+- **开箱即用（一键全自动）**：首次启动时 `docker-entrypoint.sh` 会先把仓库内置的快照数据（`seed/whale_alert.db`）灌入运行库，因此**哪怕还没配置 API Key，也能立刻看到有数据的看板**；随后自动回填最新 **2000 个区块**（`BOOTSTRAP_BLOCKS`，可用 `FORCE_BACKFILL=1` 重跑）并进入持续轮询。想要「持续更新」的实时数据，只需在 `environment .env` 里提供 `ETHERSCAN_API_KEY`。
 
 > **插件说明**：需求中的 “Percentage Trend” 面板使用官方社区插件（Grafana Labs），其可安装 id 为
 > `nikosc-percenttrend-panel`（`grafana-percentage-trend-panel` 是显示名，非实际插件 id）。

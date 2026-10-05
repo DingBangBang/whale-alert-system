@@ -3,8 +3,19 @@ services:
     build: .
     container_name: whale-checker
     restart: unless-stopped
+    # Both files are optional: a fresh clone with neither file still boots and
+    # serves the committed snapshot. Add `environment .env` (or `.env`) with an
+    # ETHERSCAN_API_KEY for live, continuously-updating data.
     env_file:
-      - "environment .env"        # ETHERSCAN_API_KEY, WHALE_THRESHOLD_USD, POLL_INTERVAL_SECONDS
+      - path: "environment .env"  # ETHERSCAN_API_KEY, WHALE_THRESHOLD_USD, POLL_INTERVAL_SECONDS
+        required: false
+      - path: ".env"
+        required: false
+    environment:
+      # One-time history depth scanned on first boot (then the poll loop takes
+      # over). Set BOOTSTRAP_BLOCKS=0 to disable, FORCE_BACKFILL=1 to re-run.
+      BOOTSTRAP_BLOCKS: "${BOOTSTRAP_BLOCKS:-2000}"
+      FORCE_BACKFILL: "${FORCE_BACKFILL:-0}"
     volumes:
       # Host `./data` holds whale_alert.db, shared read/write with Grafana below.
       - ./data:/app/data:rw

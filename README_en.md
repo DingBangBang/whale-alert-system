@@ -157,6 +157,7 @@ Once running, open Grafana at **http://localhost:3000**
 
 - Login: default `admin` / `admin`
 - The data source and dashboard are auto-loaded via provisioning — no manual configuration required.
+- **Works out of the box (fully automatic)**: on first boot `docker-entrypoint.sh` seeds the live database from the committed snapshot (`seed/whale_alert.db`), so you **see a populated dashboard immediately even before configuring an API key**. It then automatically backfills the newest **2000 blocks** (`BOOTSTRAP_BLOCKS`; re-run with `FORCE_BACKFILL=1`) and enters continuous polling. For live, continuously-updating data, just provide `ETHERSCAN_API_KEY` in `environment .env`.
 
 > **Plugin note**: the "Percentage Trend" panel from the requirements uses the official community plugin (Grafana Labs); its installable id is
 > `nikosc-percenttrend-panel` (`grafana-percentage-trend-panel` is the display name, not the actual plugin id).
