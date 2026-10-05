@@ -24,7 +24,7 @@ This project supports an **incremental accumulation mode**, kept up to date by a
 - **Daily scheduling**: schedule it daily via **cron** or **Cline Schedule** to **keep accumulating a data asset**.
 - **Bundled history**: the repository's `data/whale_alert.db` already contains **historical data** backfilled via `backfill.py`, used to demonstrate **multi-day time-series analysis**. To keep it updating, configure a daily job (below).
 
-### Steps to reproduce this after cloning
+### 🚀 Running
 
 ```bash
 # 1) Clone the incremental branch
@@ -64,14 +64,14 @@ docker run --rm -v "$PWD/data:/app/data:rw" \
   -e ETHERSCAN_API_KEY=your_key \
   bonnie333333333/daily-whale-scan:latest python whale_alert.py --once
 ```
-
+<!----
 ### 📦 Build & push locally (maintainer)
 
 ```bash
 docker build -t bonnie333333333/daily-whale-scan:latest .
 docker push bonnie333333333/daily-whale-scan:latest
 ```
-
+----->
 ---
 
 ## Demo Data & Dashboard (7d / 30d)
@@ -216,164 +216,6 @@ flowchart TD
 
     I --> K["Grafana (3001) · Last 7 days<br/>DoD / 7-day rolling avg / stacked area / heatmap / cumulative net<br/>+ reserved 7D·30D slots"]
     K -. "read ./data/whale_alert.db" .-> I
-```
-
----
-
-## 📦 Environment Setup
-
-The project uses the conda environment `whale_alert_project` (Python 3.11, already created).
-
-```bash
-# 1) Create and activate the environment (required for every command)
-conda create -n whale_alert_project python=3.11
-conda activate whale_alert_project
-
-# 2) Install dependencies (run from the project root)
-cd whale-alert-system        # or: cd /path/to/whale-alert-system
-pip install -r requirements.txt
-
-# 3) Install Docker and Grafana services
-```
-
-### Configuration file `environment .env`
-
-Put the real values into `environment .env` in the project root (already ignored by `.gitignore`, not committed):
-
-```ini
-ETHERSCAN_API_KEY=your_etherscan_v2_api_key
-WHALE_THRESHOLD_USD=500000
-POLL_INTERVAL_SECONDS=60
-SCAN_BLOCK_WINDOW=20
-CHAIN_ID=1
-```
-
-- `ETHERSCAN_API_KEY`: create one at [etherscan.io](https://etherscan.io/apis).
-- `WHALE_THRESHOLD_USD`: whale detection threshold (USD), **default 500,000** (fallback in `config.py`; if explicitly set in `environment .env` that value wins).
-- `SCAN_BLOCK_WINDOW`: number of newest blocks scanned per poll (each block = one API request, limited by the free tier; default 20).
-
-> See the template in [`.env.example`](./.env.example).
-
----
-
-## 🚀 Running
-
-### Option 1: Run locally
-
-```bash
-# Single scan (for tests / cron jobs)
-python whale_alert.py --once
-
-# Continuous polling (every 60s by default)
-python whale_alert.py
-
-# Historical backfill (automatic pagination: startblock..endblock, offset=1000 blocks/page)
-python backfill.py --blocks 1500 --offset 1000
-
-# Backfill only, no address profiling
-python backfill.py --blocks 1000 --no-profile
-
-# Whale address profiling (standalone, or triggered automatically by scan/backfill)
-python -m src.address_profiler            # incremental profiling
-python -m src.address_profiler --force    # full re-profiling
-```
-
-### Option 2: Docker Compose (recommended)
-
-```bash
-cd whale-alert-system-incremental   # the incremental branch folder
-
-# Build and start the containers (Grafana binds 3001; the checker scans only new
-# blocks from the scan_state checkpoint, accumulating over time)
-docker compose up -d --build
-
-# Follow the incremental scan logs (container: whale-checker-incremental)
-docker compose logs -f whale-checker-incremental
-```
-
-Once running, open Grafana at **http://localhost:3001** (the main branch keeps **3000**; both can run together)
-
-- Login: default `admin` / `admin`
-- The data source and dashboard are auto-loaded via provisioning — no manual configuration required.
-- **Incremental accumulation (one-click start)**: on first boot, if the live DB is empty it is seeded from the committed snapshot (`seed/whale_alert.db`); afterwards it scans **only the blocks after `last_scanned_block`** and appends via `INSERT OR IGNORE`, advancing the checkpoint only on success. For continuously-updating data, provide `ETHERSCAN_API_KEY` in `environment .env` and configure the daily schedule (step 3 above / `scripts/daily_report.py`).
-
-> **Plugin note**: the "Percentage Trend" panel from the requirements uses the official community plugin (Grafana Labs); its installable id is
-> `nikosc-percenttrend-panel` (`grafana-percentage-trend-panel` is the display name, not the actual plugin id).
-> `docker-compose.yml` sets both `GF_INSTALL_PLUGINS` (runtime install) and `GF_PLUGINS_PREINSTALL`.
-
----
-
-## 🕵️ Expected Output
-
-Example terminal alert:
-
-```applescript
-====================================================================
-  🐋  3 whale transactions triggered (threshold ≥ $10,000,000 USD)
-====================================================================
-  [exchange_inflow] 4,850.00 ETH ≈ $13,012,000.00 USD
-    from: 0xabc...
-    to:   0x28c6c0...  (Binance)
-    hash: 0x7f...
-====================================================================
-```
-
-The Grafana dashboard (`whale-overview`) has 8 panels:
-
-1. **Whale transfer amount distribution over the last 24 hours** (hourly bar chart, USD)
-2. **Exchange flow share** (pie chart: inflow / outflow / peer-to-peer)
-3. **Whale activity timeline** (detail table)
-4. **ETH price curve + whale amount scatter** (Timeseries, log axis; price from `eth_price_ticks` samples)
-5. **Today's whale transaction stats** (Stat: count / total / largest)
-6. **Amount distribution by exchange flow** (Bar Chart)
-7. **Whale address profiles** (Table: balance / stablecoins / tx frequency / contract detection / ETH exposure)
-8. **This week vs last week whale amount (week-over-week)** (Percentage Trend)
-
----
-
-## ⏱️ On "real-time" and data coverage
-
-This system uses a **near-real-time polling architecture (scheduled polling)** rather than true streaming; the poll interval is controlled by `POLL_INTERVAL_SECONDS` in `.env`. It continuously pulls the latest block data from Etherscan at a configurable interval and writes it into SQLite for Grafana. **It is not true streaming real-time** (e.g. a WebSocket `newHeads` subscription), because the free Etherscan API does not offer WebSocket push; shortening the poll interval to 10–15 seconds gets you close to real-time monitoring. This approach was chosen because of the free Etherscan API limits — subscribing to `newHeads` via Alchemy or Infura WebSockets requires a paid node.
-
-The current database covers roughly the **last 7,200 blocks (~24 hours)** of on-chain data. The backfill range can be adjusted with `backfill.py --blocks N`; for a longer window, use the `startblock` and `endblock` parameters as needed and keep in mind the free Etherscan API daily limit (100,000 calls/day). To cover a longer period, simply change the block range in `backfill.py`, e.g. `--blocks 10000` covers about 33 hours.
-
----
-
-## 🧪 Tests
-
-```bash
-conda activate whale_alert_project
-python -m pytest -q
-```
-
-Covers `detect_whales` threshold checks, boundary values, direction classification and that inputs are not mutated.
-
----
-
-## 📁 Directory Structure
-
-```
-.
-├── whale_alert.py            # main entry point (polling + alerts)
-├── etherscan_client.py       # Etherscan V2 client + detect_whales
-├── database.py               # SQLite storage
-├── config.py                 # config loading (reads environment .env)
-├── backfill.py               # historical backfill (auto-pagination, offset=1000/page)
-├── src/address_profiler.py   # whale address profiling (balance/stablecoins/frequency/contract)
-├── src/__init__.py
-├── requirements.txt
-├── Dockerfile
-├── docker-compose.yml
-├── .env.example              # environment variable template (real values in environment .env)
-├── environment .env          # real keys/threshold (gitignored, not committed)
-├── data/whale_alert.db       # SQLite database (generated at runtime)
-├── grafana/
-│   ├── provisioning/
-│   │   ├── datasources/whale_datastore.yaml
-│   │   └── dashboards/whale_dashboards.yaml
-│   └── dashboards/whale_dashboard.json
-├── tests/test_whale_alert.py
-└── docs/development-log.md   # development log + dashboard insights
 ```
 
 ---
