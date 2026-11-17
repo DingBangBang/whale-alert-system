@@ -25,3 +25,5 @@ data/*.db-shm
 
 # Generated demo artifacts (root-level screenshots are not committed)
 /whale_dashboard*.png
+data/.bootstrap_*
+logs/
